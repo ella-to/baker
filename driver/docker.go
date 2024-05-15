@@ -71,6 +71,8 @@ func (d *Docker) loadContainerById(ctx context.Context, id string) (*baker.Conta
 		}
 	}
 
+	slog.Debug("docker driver loaded container", "id", id, "addr", addr, "config", payload.Config.Labels.ServicePing)
+
 	return &baker.Container{
 		Id:         id,
 		Addr:       addr,
@@ -104,6 +106,8 @@ func (d *Docker) loadCurrentContainers(ctx context.Context) {
 			continue
 		}
 
+		slog.Debug("docker driver received current event", "id", event.ID, "state", event.State)
+
 		container, err := d.loadContainerById(ctx, event.ID)
 		if err != nil {
 			slog.Error("failed to load container", "id", event.ID, "error", err)
@@ -136,6 +140,8 @@ func (d *Docker) loadFutureContainers(ctx context.Context) {
 			slog.Error("failed to decode event", "error", err)
 			continue
 		}
+
+		slog.Debug("docker driver received future event", "id", event.ID, "status", event.Status)
 
 		if event.Status == "die" {
 			d.driver.Remove(&baker.Container{Id: event.ID})

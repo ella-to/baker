@@ -2,7 +2,7 @@ version: "3.5"
 
 services:
   baker:
-    #image: alinz/baker.go:latest
+    #image: ella-to/baker:latest
     build: .
 
     environment:

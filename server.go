@@ -174,6 +174,8 @@ func (s *Server) updateContainer(container *Container, domain, path string) {
 	cInfo.domain = domain
 	cInfo.path = path
 
+	slog.Debug("container updated", "container_id", container.Id, "domain", domain, "path", path)
+
 	s.containersMap[container.Id] = cInfo
 }
 
@@ -184,6 +186,8 @@ func (s *Server) removeContainer(container *Container) {
 	}
 
 	delete(s.containersMap, container.Id)
+
+	slog.Debug("container removed", "container_id", container.Id)
 
 	paths, ok := s.domainsMap[containerInfo.domain]
 	if !ok {
@@ -210,7 +214,15 @@ func (s *Server) removeContainer(container *Container) {
 	}
 }
 
-func (s *Server) getContainer(domain, path string) *Container {
+func (s *Server) getContainer(domain, path string) (container *Container) {
+	defer func() {
+		if container != nil {
+			slog.Debug("found container", "container_id", container.Id, "domain", domain, "path", path)
+		} else {
+			slog.Debug("not found container", "domain", domain, "path", path)
+		}
+	}()
+
 	paths, ok := s.domainsMap[domain]
 	if !ok {
 		return nil

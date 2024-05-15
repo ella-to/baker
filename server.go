@@ -1,6 +1,7 @@
 package baker
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"time"
 
+	"ella.to/baker/internal/httpclient"
 	"ella.to/baker/internal/trie"
 )
 
@@ -74,8 +76,10 @@ func (s *Server) pingContainers() {
 		containers = append(containers, cInfo)
 	}
 
-	client := http.Client{
-		Timeout: 2 * time.Second,
+	getter, err := httpclient.NewClient(httpclient.WithHttpClientTimeout(2*time.Second, ""))
+	if err != nil {
+		slog.Error("failed to create http client", "error", err)
+		return
 	}
 
 	// ping all the containers
@@ -96,21 +100,23 @@ func (s *Server) pingContainers() {
 				return
 			}
 
-			resp, err := client.Get(url)
+			ctx := context.Background()
+
+			rc, statusCode, err := getter.Get(ctx, url)
 			if err != nil {
 				slog.Error("failed to call container config endpoint", "container_id", c.Id, "url", url, "error", err)
 				return
 			}
-			defer resp.Body.Close()
+			defer rc.Close()
 
 			config := Config{}
-			if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+			if err := json.NewDecoder(rc).Decode(&config); err != nil {
 				slog.Error("failed to decode container config", "container_id", c.Id, "url", url, "error", err)
 				return
 			}
 
-			if resp.StatusCode >= 400 {
-				slog.Error("container config endpoint returned an error", "container_id", c.Id, "url", url, "status_code", resp.StatusCode)
+			if statusCode >= 400 {
+				slog.Error("container config endpoint returned an error", "container_id", c.Id, "url", url, "status_code", statusCode)
 				return
 			}
 
@@ -126,6 +132,7 @@ func (s *Server) addContainer(container *Container) {
 	if ok {
 		// usually this should not happen, but if it does, we can just
 		// return to avoid unnecessary work
+		slog.Warn("container already exists", "container_id", container.Id)
 		return
 	}
 

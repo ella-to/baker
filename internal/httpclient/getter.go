@@ -84,7 +84,7 @@ func WithHttpClient(httpClient *http.Client, host string) clientOptionFunc {
 
 func WithHttpClientTimeout(timeout time.Duration, host string) clientOptionFunc {
 	return func(c *client) error {
-		if c.httpClient == nil {
+		if c.httpClient != nil {
 			return fmt.Errorf("client not configured")
 		}
 

@@ -137,6 +137,11 @@ func (d *Docker) loadFutureContainers(ctx context.Context) {
 			continue
 		}
 
+		if event.Status == "die" {
+			d.driver.Remove(&baker.Container{Id: event.ID})
+			continue
+		}
+
 		if event.Status != "die" && event.Status != "start" {
 			continue
 		}
@@ -175,9 +180,9 @@ func (d *Docker) RegisterDriver(driver baker.Driver) {
 	go d.run()
 }
 
-func NewDocker(getter httpclient.GetterFunc) *Docker {
+func NewDocker(getter httpclient.Getter) *Docker {
 	return &Docker{
-		getter: getter,
+		getter: getter.Get,
 		close:  make(chan struct{}),
 	}
 }

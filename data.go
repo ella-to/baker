@@ -3,6 +3,7 @@ package baker
 import (
 	"encoding/json"
 	"net/netip"
+	"strings"
 )
 
 type Container struct {
@@ -15,6 +16,15 @@ type Endpoint struct {
 	Domain string `json:"domain"`
 	Path   string `json:"path"`
 	Rules  []Rule `json:"rules"`
+}
+
+func (e *Endpoint) getHashKey() string {
+	var sb strings.Builder
+
+	sb.WriteString(e.Domain)
+	sb.WriteString(e.Path)
+
+	return sb.String()
 }
 
 type Rule struct {

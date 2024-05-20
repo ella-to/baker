@@ -13,6 +13,7 @@ import (
 	"ella.to/baker/driver"
 	"ella.to/baker/internal/acme"
 	"ella.to/baker/internal/httpclient"
+	"ella.to/baker/rule"
 )
 
 var Version = "master"
@@ -49,7 +50,15 @@ https://ella.to/baker
 
 	docker := driver.NewDocker(dockerGetter)
 
-	handler := baker.NewServer(baker.WithBufferSize(bufferSize), baker.WithPingDuration(pingDuration))
+	handler := baker.NewServer(
+		baker.WithBufferSize(bufferSize),
+		baker.WithPingDuration(pingDuration),
+		baker.WithRules(
+			rule.RegisterAppendPath(),
+			rule.RegisterReplacePath(),
+			rule.RegisterRateLimiter(),
+		),
+	)
 	handler.RegisterDriver(docker.RegisterDriver)
 
 	if acmeEnable {

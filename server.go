@@ -14,6 +14,7 @@ import (
 	"ella.to/baker/internal/httpclient"
 	"ella.to/baker/internal/trie"
 	"ella.to/baker/rule"
+	"github.com/alinz/baker.go/pkg/collection"
 )
 
 type containerInfo struct {
@@ -24,13 +25,14 @@ type containerInfo struct {
 }
 
 type Server struct {
-	bufferSize    int
-	pingDuration  time.Duration
-	containersMap map[string]*containerInfo       // containerID -> containerInfo
-	domainsMap    map[string]*trie.Node[*Service] // domain -> path -> containers
-	rules         map[string]rule.BuilderFunc
-	runner        *ActionRunner
-	close         chan struct{}
+	bufferSize         int
+	pingDuration       time.Duration
+	containersMap      map[string]*containerInfo       // containerID -> containerInfo
+	domainsMap         map[string]*trie.Node[*Service] // domain -> path -> containers
+	rules              map[string]rule.BuilderFunc
+	middlewareCacheMap *collection.Map[rule.Middleware]
+	runner             *ActionRunner
+	close              chan struct{}
 }
 
 var _ http.Handler = (*Server)(nil)
@@ -100,6 +102,16 @@ func (s *Server) getMiddlewares(endpoint *Endpoint) ([]rule.Middleware, error) {
 		middleware, err := builder(r.Args)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse args for rule %s: %w", r.Type, err)
+		}
+
+		if middleware.IsCachable() {
+			middleware = s.middlewareCacheMap.GetAndUpdate(endpoint.getHashKey(), func(old rule.Middleware, found bool) rule.Middleware {
+				if found {
+					return old.UpdateMiddelware(middleware)
+				}
+
+				return middleware.UpdateMiddelware(nil)
+			})
 		}
 
 		middlewares = append(middlewares, middleware)
@@ -249,6 +261,7 @@ func (s *Server) removeContainer(container *Container) {
 		service.Containers = append(service.Containers[:i], service.Containers[i+1:]...)
 		if len(service.Containers) == 0 {
 			paths.Del([]rune(containerInfo.path))
+			s.middlewareCacheMap.Delete(service.Endpoint.getHashKey())
 		} else {
 			paths.Put([]rune(containerInfo.path), service)
 		}
@@ -283,38 +296,58 @@ func (s *Server) getContainer(domain, path string) (container *Container, endpoi
 }
 
 type serverOpt interface {
-	configureServer(*Server)
+	configureServer(*Server) error
 }
 
-type serverOptFunc func(*Server)
+type serverOptFunc func(*Server) error
 
-func (f serverOptFunc) configureServer(s *Server) {
-	f(s)
+func (f serverOptFunc) configureServer(s *Server) error {
+	return f(s)
 }
 
 func WithBufferSize(size int) serverOptFunc {
-	return func(s *Server) {
+	return func(s *Server) error {
 		s.bufferSize = size
+		return nil
 	}
 }
 
 func WithPingDuration(d time.Duration) serverOptFunc {
-	return func(s *Server) {
+	return func(s *Server) error {
 		s.pingDuration = d
+		return nil
+	}
+}
+
+func WithRules(rules ...rule.RegisterFunc) serverOptFunc {
+	return func(s *Server) error {
+		s.rules = make(map[string]rule.BuilderFunc)
+
+		for _, r := range rules {
+			if err := r(s.rules); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 }
 
 func NewServer(opts ...serverOpt) *Server {
 	s := &Server{
-		bufferSize:    100,
-		pingDuration:  10 * time.Second,
-		containersMap: make(map[string]*containerInfo),
-		domainsMap:    make(map[string]*trie.Node[*Service]),
-		close:         make(chan struct{}),
+		bufferSize:         100,
+		pingDuration:       10 * time.Second,
+		containersMap:      make(map[string]*containerInfo),
+		domainsMap:         make(map[string]*trie.Node[*Service]),
+		middlewareCacheMap: collection.NewMap[rule.Middleware](),
+		close:              make(chan struct{}),
 	}
 
 	for _, opt := range opts {
-		opt.configureServer(s)
+		if err := opt.configureServer(s); err != nil {
+			slog.Error("failed to configure server", "error", err)
+			return nil
+		}
 	}
 
 	s.runner = NewActionRunner(

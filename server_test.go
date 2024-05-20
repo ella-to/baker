@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ella.to/baker"
+	"ella.to/baker/rule"
 )
 
 var count int
@@ -51,7 +52,14 @@ func createDummyContainer(t *testing.T, config *baker.Config) *baker.Container {
 }
 
 func createBakerServer(t *testing.T) (*baker.Server, string) {
-	handler := baker.NewServer(baker.WithPingDuration(2 * time.Second))
+	handler := baker.NewServer(
+		baker.WithPingDuration(2*time.Second),
+		baker.WithRules(
+			rule.RegisterAppendPath(),
+			rule.RegisterReplacePath(),
+			rule.RegisterRateLimiter(),
+		),
+	)
 	server := httptest.NewServer(handler)
 	t.Cleanup(func() {
 		handler.Close()
@@ -100,4 +108,71 @@ func TestServer(t *testing.T) {
 	}
 
 	resp.Body.Close()
+}
+
+func TestRateLimiter(t *testing.T) {
+	t.Skip("skipping test for now")
+
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+
+	container1 := createDummyContainer(t, &baker.Config{
+		Endpoints: []baker.Endpoint{
+			{
+				Domain: "example.com",
+				Path:   "/ella/a",
+				Rules: []baker.Rule{
+					{
+						Type: "RateLimiter",
+						Args: json.RawMessage(`{"request_limit":2,"window_duration":"3s"}`),
+					},
+				},
+			},
+		},
+	})
+
+	server, url := createBakerServer(t)
+
+	var driver baker.Driver
+
+	server.RegisterDriver(func(d baker.Driver) {
+		driver = d
+	})
+
+	driver.Add(container1)
+
+	// Wait for the server to process the container
+	time.Sleep(4 * time.Second)
+
+	for range 2 {
+		if err := makeCall(url, "/ella/a", "example.com"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := makeCall(url, "/ella/a", "example.com"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	fmt.Println("waiting for rate limiter to reset")
+}
+
+func makeCall(url, path, host string) error {
+	req, err := http.NewRequest(http.MethodGet, url+path, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Host = host
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return err
+	}
+
+	resp.Body.Close()
+	return nil
 }

@@ -13,6 +13,7 @@ import (
 
 	"ella.to/baker/internal/httpclient"
 	"ella.to/baker/internal/trie"
+	"ella.to/baker/rule"
 )
 
 type containerInfo struct {
@@ -25,8 +26,9 @@ type containerInfo struct {
 type Server struct {
 	bufferSize    int
 	pingDuration  time.Duration
-	containersMap map[string]*containerInfo           // containerID -> containerInfo
-	domainsMap    map[string]*trie.Node[[]*Container] // domain -> path -> containers
+	containersMap map[string]*containerInfo       // containerID -> containerInfo
+	domainsMap    map[string]*trie.Node[*Service] // domain -> path -> containers
+	rules         map[string]rule.BuilderFunc
 	runner        *ActionRunner
 	close         chan struct{}
 }
@@ -37,7 +39,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	domain := r.Host
 	path := r.URL.Path
 
-	container := s.runner.Get(r.Context(), domain, path)
+	var container *Container
+	endpoint := &Endpoint{
+		Domain: domain,
+		Path:   path,
+	}
+
+	container, endpoint = s.runner.Get(r.Context(), endpoint)
 	if container == nil {
 		http.NotFound(w, r)
 		return
@@ -57,7 +65,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	proxy.ServeHTTP(w, r)
+	middlewares, err := s.getMiddlewares(endpoint)
+	if err != nil {
+		slog.Error("failed to get middlewares", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	rule.Chain(proxy, middlewares...).ServeHTTP(w, r)
 }
 
 func (s *Server) Close() {
@@ -67,6 +82,30 @@ func (s *Server) Close() {
 
 func (s *Server) RegisterDriver(fn func(Driver)) {
 	fn(s.runner)
+}
+
+func (s *Server) getMiddlewares(endpoint *Endpoint) ([]rule.Middleware, error) {
+	if len(endpoint.Rules) == 0 {
+		return rule.Empty, nil
+	}
+
+	middlewares := make([]rule.Middleware, 0)
+
+	for _, r := range endpoint.Rules {
+		builder, ok := s.rules[r.Type]
+		if !ok {
+			return nil, fmt.Errorf("failed to find rule builder for %s", r.Type)
+		}
+
+		middleware, err := builder(r.Args)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse args for rule %s: %w", r.Type, err)
+		}
+
+		middlewares = append(middlewares, middleware)
+	}
+
+	return middlewares, nil
 }
 
 func (s *Server) pingContainers() {
@@ -121,7 +160,7 @@ func (s *Server) pingContainers() {
 			}
 
 			for _, endpoint := range config.Endpoints {
-				s.runner.Update(c, endpoint.Domain, endpoint.Path)
+				s.runner.Update(c, &endpoint)
 			}
 		}(c, url, pingCount)
 	}
@@ -143,38 +182,41 @@ func (s *Server) addContainer(container *Container) {
 	}
 }
 
-func (s *Server) updateContainer(container *Container, domain, path string) {
+func (s *Server) updateContainer(container *Container, endpoint *Endpoint) {
 	cInfo, ok := s.containersMap[container.Id]
-	if ok && cInfo.domain == domain && cInfo.path == path {
+	if ok && cInfo.domain == endpoint.Domain && cInfo.path == endpoint.Path {
 		// if the container is already in the correct domain and path, we don't need to do anything
 		// we can just return to avoid unnecessary work
 		return
 	}
 
-	paths, ok := s.domainsMap[domain]
+	paths, ok := s.domainsMap[endpoint.Domain]
 	if !ok {
-		paths = trie.New[[]*Container]()
-		s.domainsMap[domain] = paths
+		paths = trie.New[*Service]()
+		s.domainsMap[endpoint.Domain] = paths
 	}
 
-	containers := paths.Get([]rune(path))
-	if containers == nil {
-		containers = []*Container{container}
+	service := paths.Get([]rune(endpoint.Path))
+	if service == nil {
+		service = &Service{
+			Containers: []*Container{container},
+			Endpoint:   endpoint,
+		}
 	} else {
 		// we don't need to check if the container is already in the list, because we already checked that
 		// in the beginning of this function
-		containers = append(containers, container)
+		service.Containers = append(service.Containers, container)
 	}
-	paths.Put([]rune(path), containers)
+	paths.Put([]rune(endpoint.Path), service)
 
 	// One thing to note that cInfo is not nil here
 	// because we have intitalized it during the addContainer call
 	// if it was nil, it should be a panic situation
 
-	cInfo.domain = domain
-	cInfo.path = path
+	cInfo.domain = endpoint.Domain
+	cInfo.path = endpoint.Path
 
-	slog.Debug("container updated", "container_id", container.Id, "domain", domain, "path", path)
+	slog.Debug("container updated", "container_id", container.Id, "domain", endpoint.Domain, "path", endpoint.Path)
 
 	s.containersMap[container.Id] = cInfo
 }
@@ -194,27 +236,27 @@ func (s *Server) removeContainer(container *Container) {
 		return
 	}
 
-	containers := paths.Get([]rune(containerInfo.path))
-	if containers == nil {
+	service := paths.Get([]rune(containerInfo.path))
+	if service == nil {
 		return
 	}
 
-	for i, c := range containers {
+	for i, c := range service.Containers {
 		if c.Id != container.Id {
 			continue
 		}
 
-		containers = append(containers[:i], containers[i+1:]...)
-		if len(containers) == 0 {
+		service.Containers = append(service.Containers[:i], service.Containers[i+1:]...)
+		if len(service.Containers) == 0 {
 			paths.Del([]rune(containerInfo.path))
 		} else {
-			paths.Put([]rune(containerInfo.path), containers)
+			paths.Put([]rune(containerInfo.path), service)
 		}
 		break
 	}
 }
 
-func (s *Server) getContainer(domain, path string) (container *Container) {
+func (s *Server) getContainer(domain, path string) (container *Container, endpoint *Endpoint) {
 	defer func() {
 		if container != nil {
 			slog.Debug("found container", "container_id", container.Id, "domain", domain, "path", path)
@@ -225,19 +267,19 @@ func (s *Server) getContainer(domain, path string) (container *Container) {
 
 	paths, ok := s.domainsMap[domain]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
-	containers := paths.Get([]rune(path))
-	if len(containers) == 0 {
-		return nil
+	service := paths.Get([]rune(path))
+	if service == nil || len(service.Containers) == 0 {
+		return nil, nil
 	}
 
 	// randomly select a container from the list
 	// this is not the best way to do this, but it's good enough for now
-	pos := rand.Int31n(int32(len(containers)))
+	pos := rand.Int31n(int32(len(service.Containers)))
 
-	return containers[pos]
+	return service.Containers[pos], service.Endpoint
 }
 
 type serverOpt interface {
@@ -267,7 +309,7 @@ func NewServer(opts ...serverOpt) *Server {
 		bufferSize:    100,
 		pingDuration:  10 * time.Second,
 		containersMap: make(map[string]*containerInfo),
-		domainsMap:    make(map[string]*trie.Node[[]*Container]),
+		domainsMap:    make(map[string]*trie.Node[*Service]),
 		close:         make(chan struct{}),
 	}
 

@@ -19,17 +19,19 @@ const (
 type Event struct {
 	Type      EventType
 	Container *Container
-	Domain    string
-	Path      string
-	Result    chan *Container
+	Endpoint  *Endpoint
+	Result    chan struct {
+		Container *Container
+		Endpoint  *Endpoint
+	}
 }
 
 type ActionRunner struct {
 	pingerCallback func()
 	addCallback    func(*Container)
-	updateCallback func(*Container, string, string)
+	updateCallback func(*Container, *Endpoint)
 	removeCallback func(*Container)
-	getCallback    func(string, string) *Container
+	getCallback    func(string, string) (*Container, *Endpoint)
 
 	events chan *Event
 	close  chan struct{} // using this to make sure pushing to events stops when Close() is called
@@ -45,31 +47,33 @@ func (ar *ActionRunner) Add(container *Container) {
 	ar.push(&Event{Type: addEvent, Container: container})
 }
 
-func (ar *ActionRunner) Update(container *Container, domain string, path string) {
-	ar.push(&Event{Type: updateEvent, Container: container, Domain: domain, Path: path})
+func (ar *ActionRunner) Update(container *Container, endpoint *Endpoint) {
+	ar.push(&Event{Type: updateEvent, Container: container, Endpoint: endpoint})
 }
 
 func (ar *ActionRunner) Remove(container *Container) {
 	ar.push(&Event{Type: removeEvent, Container: container})
 }
 
-func (ar *ActionRunner) Get(ctx context.Context, domain, path string) *Container {
+func (ar *ActionRunner) Get(ctx context.Context, endpoint *Endpoint) (*Container, *Endpoint) {
 	evt := &Event{
-		Type:   getEvent,
-		Domain: domain,
-		Path:   path,
-		Result: make(chan *Container, 1),
+		Type:     getEvent,
+		Endpoint: endpoint,
+		Result: make(chan struct {
+			Container *Container
+			Endpoint  *Endpoint
+		}, 1),
 	}
 
 	ar.push(evt)
 
 	select {
-	case container := <-evt.Result:
-		return container
+	case r := <-evt.Result:
+		return r.Container, r.Endpoint
 	case <-ctx.Done():
-		return nil
+		return nil, nil
 	case <-ar.close:
-		return nil
+		return nil, nil
 	}
 }
 
@@ -85,7 +89,6 @@ func (ar *ActionRunner) push(event *Event) {
 
 func (ar *ActionRunner) Close() {
 	close(ar.close)
-	close(ar.events)
 }
 
 func WithPingerCallback(callback func()) func(*ActionRunner) {
@@ -100,7 +103,7 @@ func WithAddCallback(callback func(*Container)) func(*ActionRunner) {
 	}
 }
 
-func WithUpdateCallback(callback func(*Container, string, string)) func(*ActionRunner) {
+func WithUpdateCallback(callback func(*Container, *Endpoint)) func(*ActionRunner) {
 	return func(ar *ActionRunner) {
 		ar.updateCallback = callback
 	}
@@ -112,7 +115,7 @@ func WithRemoveCallback(callback func(*Container)) func(*ActionRunner) {
 	}
 }
 
-func WithGetCallback(callback func(string, string) *Container) func(*ActionRunner) {
+func WithGetCallback(callback func(string, string) (*Container, *Endpoint)) func(*ActionRunner) {
 	return func(ar *ActionRunner) {
 		ar.getCallback = callback
 	}
@@ -133,20 +136,33 @@ func NewActionRunner(bufferSize int, cbs ...ActionCallback) *ActionRunner {
 	go func() {
 		defer slog.Debug("ActionRunner: stopped")
 
-		for event := range ar.events {
-			switch event.Type {
-			case pingerEvent:
-				ar.pingerCallback()
-			case addEvent:
-				ar.addCallback(event.Container)
-			case updateEvent:
-				ar.updateCallback(event.Container, event.Domain, event.Path)
-			case removeEvent:
-				ar.removeCallback(event.Container)
-			case getEvent:
-				event.Result <- ar.getCallback(event.Domain, event.Path)
-			default:
-				continue
+		for {
+			select {
+			case <-ar.close:
+				return
+			case event, ok := <-ar.events:
+				if !ok {
+					return
+				}
+
+				switch event.Type {
+				case pingerEvent:
+					ar.pingerCallback()
+				case addEvent:
+					ar.addCallback(event.Container)
+				case updateEvent:
+					ar.updateCallback(event.Container, event.Endpoint)
+				case removeEvent:
+					ar.removeCallback(event.Container)
+				case getEvent:
+					container, endpoint := ar.getCallback(event.Endpoint.Domain, event.Endpoint.Path)
+					event.Result <- struct {
+						Container *Container
+						Endpoint  *Endpoint
+					}{container, endpoint}
+				default:
+					continue
+				}
 			}
 		}
 	}()

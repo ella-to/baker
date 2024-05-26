@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,6 +159,74 @@ func TestRateLimiter(t *testing.T) {
 	}
 
 	fmt.Println("waiting for rate limiter to reset")
+}
+
+func TestMultiCalls(t *testing.T) {
+	slog.SetLogLoggerLevel(slog.LevelDebug)
+
+	container1 := createDummyContainer(t, &baker.Config{
+		Endpoints: []baker.Endpoint{
+			{
+				Domain: "example.com",
+				Path:   "/ella/a",
+				Rules:  []baker.Rule{},
+			},
+			{
+				Domain: "example.com",
+				Path:   "/*",
+				Rules:  []baker.Rule{},
+			},
+		},
+	})
+
+	container2 := createDummyContainerRaw(t, `
+	{
+		"endpoints": [
+		  {
+			"domain": "sample.example2.com",
+			"path": "/*",
+			"rules": [
+			  {
+				"type": "RateLimiter",
+				"args": { "request_limit": 100, "window_duration": "60s" }
+			  }
+			]
+		  },
+		  { "domain": "example2.com", "path": "/*", "rules": [] },
+		  { "domain": "www.example2.com", "path": "/*", "rules": [] },
+		  { "domain": "gateway.example2.com", "path": "/*", "rules": [] }
+		]
+	  }
+	`)
+
+	server, url := createBakerServer(t)
+
+	var driver baker.Driver
+
+	server.RegisterDriver(func(d baker.Driver) {
+		driver = d
+	})
+
+	driver.Add(container1)
+	driver.Add(container2)
+
+	// Wait for the server to process the container
+	time.Sleep(4 * time.Second)
+
+	var wg sync.WaitGroup
+
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := makeCall(url, "/asset/index.html", "sample.example2.com")
+			if err != nil {
+				fmt.Println("error", err)
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 func makeCall(url, path, host string) error {

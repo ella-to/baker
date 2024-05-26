@@ -53,7 +53,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	container, endpoint = s.runner.Get(r.Context(), endpoint)
 	if container == nil {
-		http.NotFound(w, r)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "not found, domain: %s, path: %s", domain, path)
 		return
 	}
 

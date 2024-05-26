@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"ella.to/baker/internal/collection"
 	"ella.to/baker/internal/httpclient"
 	"ella.to/baker/internal/trie"
 	"ella.to/baker/rule"
-	"github.com/alinz/baker.go/pkg/collection"
 )
 
 type containerInfo struct {

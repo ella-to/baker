@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -161,8 +162,13 @@ func (s *Server) pingContainers() {
 			defer rc.Close()
 
 			config := Config{}
-			if err := json.NewDecoder(rc).Decode(&config); err != nil {
-				slog.Error("failed to decode container config", "container_id", c.Id, "url", url, "error", err)
+			payload, err := io.ReadAll(rc)
+			if err != nil {
+				slog.Error("failed to read container config", "container_id", c.Id, "url", url, "error", err)
+				return
+			}
+			if err := json.Unmarshal(payload, &config); err != nil {
+				slog.Error("failed to decode container config", "container_id", c.Id, "url", url, "error", err, "payload", string(payload))
 				return
 			}
 

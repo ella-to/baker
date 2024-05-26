@@ -22,13 +22,13 @@ func createDummyContainer(t *testing.T, config *baker.Config) *baker.Container {
 		slog.Debug("request", "host", r.Host, "path", r.URL.Path)
 
 		if r.URL.Path == "/config" {
-
 			b, err := json.Marshal(config)
 			if err != nil {
 				t.Fatal(err)
 			}
 			w.WriteHeader(http.StatusOK)
 			w.Write(b)
+			return
 		}
 
 		w.WriteHeader(http.StatusOK)

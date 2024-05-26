@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"ella.to/baker/internal/httpclient"
@@ -34,6 +36,7 @@ type Server struct {
 	middlewareCacheMap *collection.Map[rule.Middleware]
 	runner             *ActionRunner
 	close              chan struct{}
+	isDebug            bool
 }
 
 var _ http.Handler = (*Server)(nil)
@@ -161,14 +164,9 @@ func (s *Server) pingContainers() {
 			}
 			defer rc.Close()
 
-			config := Config{}
-			payload, err := io.ReadAll(rc)
+			config, err := s.parseConfig(rc)
 			if err != nil {
 				slog.Error("failed to read container config", "container_id", c.Id, "url", url, "error", err)
-				return
-			}
-			if err := json.Unmarshal(payload, &config); err != nil {
-				slog.Error("failed to decode container config", "container_id", c.Id, "url", url, "error", err, "payload", string(payload))
 				return
 			}
 
@@ -182,6 +180,27 @@ func (s *Server) pingContainers() {
 			}
 		}(c, url, pingCount)
 	}
+}
+
+func (s *Server) parseConfig(rc io.ReadCloser) (*Config, error) {
+	config := &Config{}
+
+	if s.isDebug {
+		payload, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read config: %w", err)
+		}
+
+		if err := json.Unmarshal(payload, config); err != nil {
+			return nil, fmt.Errorf("failed to decode config: %w, payload=%s", err, payload)
+		}
+	} else {
+		if err := json.NewDecoder(rc).Decode(config); err != nil {
+			return nil, fmt.Errorf("failed to decode config: %w", err)
+		}
+	}
+
+	return config, nil
 }
 
 func (s *Server) addContainer(container *Container) {
@@ -340,6 +359,8 @@ func WithRules(rules ...rule.RegisterFunc) serverOptFunc {
 }
 
 func NewServer(opts ...serverOpt) *Server {
+	logLevel := strings.ToLower(os.Getenv("BAKER_LOG_LEVEL"))
+
 	s := &Server{
 		bufferSize:         100,
 		pingDuration:       10 * time.Second,
@@ -347,6 +368,7 @@ func NewServer(opts ...serverOpt) *Server {
 		domainsMap:         make(map[string]*trie.Node[*Service]),
 		middlewareCacheMap: collection.NewMap[rule.Middleware](),
 		close:              make(chan struct{}),
+		isDebug:            logLevel == "debug",
 	}
 
 	for _, opt := range opts {

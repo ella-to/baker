@@ -17,17 +17,13 @@ import (
 
 var count int
 
-func createDummyContainer(t *testing.T, config *baker.Config) *baker.Container {
+func createDummyContainerRaw(t *testing.T, config string) *baker.Container {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("request", "host", r.Host, "path", r.URL.Path)
 
 		if r.URL.Path == "/config" {
-			b, err := json.Marshal(config)
-			if err != nil {
-				t.Fatal(err)
-			}
 			w.WriteHeader(http.StatusOK)
-			w.Write(b)
+			w.Write([]byte(config))
 			return
 		}
 
@@ -49,6 +45,15 @@ func createDummyContainer(t *testing.T, config *baker.Config) *baker.Container {
 		ConfigPath: "/config",
 		Addr:       addr,
 	}
+}
+
+func createDummyContainer(t *testing.T, config *baker.Config) *baker.Container {
+	configBytes, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return createDummyContainerRaw(t, string(configBytes))
 }
 
 func createBakerServer(t *testing.T) (*baker.Server, string) {

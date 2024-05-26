@@ -191,8 +191,10 @@ func (s *Server) parseConfig(rc io.ReadCloser) (*Config, error) {
 			return nil, fmt.Errorf("failed to read config: %w", err)
 		}
 
+		slog.Debug("parsing config payload", "payload", string(payload))
+
 		if err := json.Unmarshal(payload, config); err != nil {
-			return nil, fmt.Errorf("failed to decode config: %w, payload=%s", err, payload)
+			return nil, fmt.Errorf("failed to decode config: %w", err)
 		}
 	} else {
 		if err := json.NewDecoder(rc).Decode(config); err != nil {

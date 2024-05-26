@@ -3,6 +3,7 @@ package baker_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -116,8 +117,6 @@ func TestServer(t *testing.T) {
 }
 
 func TestRateLimiter(t *testing.T) {
-	t.Skip("skipping test for now")
-
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	container1 := createDummyContainer(t, &baker.Config{
@@ -174,8 +173,12 @@ func makeCall(url, path, host string) error {
 		return err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return err
+	if resp.StatusCode > http.StatusOK {
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("expected status code 200, got %d, body: %s", resp.StatusCode, string(b))
 	}
 
 	resp.Body.Close()

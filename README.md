@@ -1,10 +1,10 @@
 ```
-   ____        _
-  | __ )  __ _| | _____ _ __
-  |  _ \ / _  | |/ / _ \ '__|
-  | |_) | (_| |   <  __/ |
-  |____/ \__,_|_|\_\___|_|
-
+██████╗░░█████╗░██╗░░██╗███████╗██████╗░
+██╔══██╗██╔══██╗██║░██╔╝██╔════╝██╔══██╗
+██████╦╝███████║█████═╝░█████╗░░██████╔╝
+██╔══██╗██╔══██║██╔═██╗░██╔══╝░░██╔══██╗
+██████╦╝██║░░██║██║░╚██╗███████╗██║░░██║
+╚═════╝░╚═╝░░╚═╝╚═╝░░╚═╝╚══════╝╚═╝░░╚═╝
 ```
 
 # Introduction
@@ -23,6 +23,7 @@ Baker is a dynamic HTTP reverse proxy with a focus on extensibility and flexibil
 - Default load balancing.
 - Automatic SSL certificate updates and creation using Let's Encrypt.
 - Configurable rate limiter per domain and path.
+- Prometheus metrics are available at `BAKER_METRICS_ADDRS/metrics`
 
 # Usage
 
@@ -33,7 +34,7 @@ version: "3.5"
 
 services:
   baker:
-    image: alinz/baker:latest
+    image: ellato/baker:latest
 
     environment:
       # enables ACME system
@@ -41,6 +42,9 @@ services:
       # folder location which holds all certification
       - BAKER_ACME_PATH=/acme/cert
       - BAKER_LOG_LEVEL=DEBUG
+      - BAKER_BUFFER_SIZE=100
+      - BAKER_PING_DURATION=2s
+      - BAKER_METRICS_ADDR=:8089
 
     ports:
       - "80:80"

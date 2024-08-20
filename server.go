@@ -16,6 +16,7 @@ import (
 
 	"ella.to/baker/internal/collection"
 	"ella.to/baker/internal/httpclient"
+	"ella.to/baker/internal/metrics"
 	"ella.to/baker/internal/trie"
 	"ella.to/baker/rule"
 )
@@ -41,9 +42,38 @@ type Server struct {
 
 var _ http.Handler = (*Server)(nil)
 
+type trackResponseWriter struct {
+	statusCode int
+	w          http.ResponseWriter
+}
+
+var _ http.ResponseWriter = (*trackResponseWriter)(nil)
+
+func (t *trackResponseWriter) Header() http.Header {
+	return t.w.Header()
+}
+
+func (t *trackResponseWriter) Write(p []byte) (int, error) {
+	return t.w.Write(p)
+}
+
+func (t *trackResponseWriter) WriteHeader(code int) {
+	t.statusCode = code
+	t.w.WriteHeader(code)
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	domain := r.Host
 	path := r.URL.Path
+	method := r.Method
+
+	tw := &trackResponseWriter{w: w}
+
+	start := time.Now()
+	defer func() {
+		metrics.HttpProcessedRequest(domain, path, method, tw.statusCode)
+		metrics.HttpRequestDuration(domain, path, method, tw.statusCode, float64(time.Since(start)))
+	}()
 
 	var container *Container
 	endpoint := &Endpoint{
@@ -53,8 +83,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	container, endpoint = s.runner.Get(r.Context(), endpoint)
 	if container == nil {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, "not found, domain: %s, path: %s", domain, path)
+		tw.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(tw, "not found, domain: %s, path: %s", domain, path)
 		return
 	}
 
@@ -79,7 +109,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rule.Chain(proxy, middlewares...).ServeHTTP(w, r)
+	rule.Chain(proxy, middlewares...).ServeHTTP(tw, r)
 }
 
 func (s *Server) Close() {

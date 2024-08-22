@@ -1,5 +1,3 @@
-version: "3.5"
-
 services:
   baker:
     #image: ella-to/baker:latest
@@ -30,5 +28,5 @@ services:
 
 networks:
   baker:
-    name: baker_net
+    name: baker
     driver: bridge

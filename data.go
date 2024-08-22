@@ -41,7 +41,12 @@ type Service struct {
 	Endpoint   *Endpoint
 }
 
+type MetaData struct {
+	StaticDomain string
+	StaticPath   string
+}
+
 type Driver interface {
-	Add(*Container)
+	Add(*Container, *MetaData)
 	Remove(*Container)
 }

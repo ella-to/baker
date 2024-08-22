@@ -23,6 +23,7 @@ import (
 
 type containerInfo struct {
 	container *Container
+	meta      *MetaData
 	domain    string
 	path      string
 	pingCount int64
@@ -159,7 +160,16 @@ func (s *Server) pingContainers() {
 	// make a copy of the containers map
 	containers := make([]*containerInfo, 0, len(s.containersMap))
 	for _, cInfo := range s.containersMap {
-		containers = append(containers, cInfo)
+		// if container has a static domain configuration, we dont need to ping it
+		if cInfo.meta == nil || cInfo.meta.StaticDomain == "" {
+			containers = append(containers, cInfo)
+		} else {
+			s.runner.Update(cInfo.container, &Endpoint{
+				Domain: cInfo.meta.StaticDomain,
+				Path:   cInfo.meta.StaticPath,
+				Rules:  []Rule{},
+			})
+		}
 	}
 
 	getter, err := httpclient.NewClient(httpclient.WithHttpClientTimeout(2*time.Second, ""))
@@ -236,7 +246,7 @@ func (s *Server) parseConfig(rc io.ReadCloser) (*Config, error) {
 	return config, nil
 }
 
-func (s *Server) addContainer(container *Container) {
+func (s *Server) addContainer(container *Container, meta *MetaData) {
 	_, ok := s.containersMap[container.Id]
 	if ok {
 		// usually this should not happen, but if it does, we can just
@@ -247,6 +257,7 @@ func (s *Server) addContainer(container *Container) {
 
 	s.containersMap[container.Id] = &containerInfo{
 		container: container,
+		meta:      meta,
 		domain:    "",
 		path:      "",
 	}

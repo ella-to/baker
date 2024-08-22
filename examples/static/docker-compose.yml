@@ -1,12 +1,13 @@
 services:
-  example-service:
+  example-static-service:
     build: .
 
     labels:
       - "baker.enable=true"
       - "baker.network=baker"
       - "baker.service.port=8000"
-      - "baker.service.ping=/config"
+      - "baker.service.static.domain=example.com"
+      - "baker.service.static.path=/*"
 
     networks:
       - baker
@@ -14,4 +15,4 @@ services:
 networks:
   baker:
     name: baker
-    external: true
+    external: true     

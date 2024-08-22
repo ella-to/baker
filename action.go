@@ -19,6 +19,7 @@ const (
 type Event struct {
 	Type      EventType
 	Container *Container
+	Meta      *MetaData
 	Endpoint  *Endpoint
 	Result    chan struct {
 		Container *Container
@@ -28,7 +29,7 @@ type Event struct {
 
 type ActionRunner struct {
 	pingerCallback func()
-	addCallback    func(*Container)
+	addCallback    func(*Container, *MetaData)
 	updateCallback func(*Container, *Endpoint)
 	removeCallback func(*Container)
 	getCallback    func(string, string) (*Container, *Endpoint)
@@ -43,8 +44,8 @@ func (ar *ActionRunner) Pinger() {
 	ar.push(&Event{Type: pingerEvent})
 }
 
-func (ar *ActionRunner) Add(container *Container) {
-	ar.push(&Event{Type: addEvent, Container: container})
+func (ar *ActionRunner) Add(container *Container, meta *MetaData) {
+	ar.push(&Event{Type: addEvent, Container: container, Meta: meta})
 }
 
 func (ar *ActionRunner) Update(container *Container, endpoint *Endpoint) {
@@ -97,7 +98,7 @@ func WithPingerCallback(callback func()) func(*ActionRunner) {
 	}
 }
 
-func WithAddCallback(callback func(*Container)) func(*ActionRunner) {
+func WithAddCallback(callback func(*Container, *MetaData)) func(*ActionRunner) {
 	return func(ar *ActionRunner) {
 		ar.addCallback = callback
 	}
@@ -149,7 +150,7 @@ func NewActionRunner(bufferSize int, cbs ...ActionCallback) *ActionRunner {
 				case pingerEvent:
 					ar.pingerCallback()
 				case addEvent:
-					ar.addCallback(event.Container)
+					ar.addCallback(event.Container, event.Meta)
 				case updateEvent:
 					ar.updateCallback(event.Container, event.Endpoint)
 				case removeEvent:

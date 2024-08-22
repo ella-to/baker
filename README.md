@@ -24,14 +24,13 @@ Baker is a dynamic HTTP reverse proxy with a focus on extensibility and flexibil
 - Automatic SSL certificate updates and creation using Let's Encrypt.
 - Configurable rate limiter per domain and path.
 - Prometheus metrics are available at `BAKER_METRICS_ADDRS/metrics`
+- Static Configuration for those services that doesn't expose any config path
 
 # Usage
 
 First, we need to run Baker inside docker. The following `docker-compose.yml`
 
 ```yml
-version: "3.5"
-
 services:
   baker:
     image: ellato/baker:latest
@@ -61,15 +60,13 @@ services:
 
 networks:
   baker:
-    name: baker_net
+    name: baker
     driver: bridge
 ```
 
 Then for each service, the following `docker-compose` can be used. The only requirements are labels and networks. Make sure both baker and service have the same network interface
 
 ```yml
-version: "3.5"
-
 services:
   service1:
     image: service:latest
@@ -79,14 +76,16 @@ services:
       - "baker.network=baker_net"
       - "baker.service.port=8000"
       - "baker.service.ping=/config"
+      - "baker.service.static.domain=xyz.example.com" # only define this if service is not dyanmic
+      - "baker.service.static.path=/*" # only define this if service is not dyanmic
 
     networks:
       - baker
 
 networks:
   baker:
-    external:
-      name: baker_net
+    name: baker
+    external: true
 ```
 
 The service should expose a REST endpoint that returns a configuration. This endpoint acts as a health check and provides real-time configuration.

@@ -23,7 +23,6 @@ import (
 
 type containerInfo struct {
 	container *Container
-	meta      *MetaData
 	domain    string
 	path      string
 	pingCount int64
@@ -100,6 +99,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			r.SetURL(url)     // Forward request to outboundURL.
 			r.SetXForwarded() // Set X-Forwarded-* headers.
+
+			for k, v := range container.Meta.Static.Headers {
+				key := strings.ToUpper(k)
+				if key == "HOST" {
+					r.Out.Host = v
+					continue
+				}
+				r.Out.Header.Set(key, v)
+			}
 		},
 	}
 
@@ -161,12 +169,12 @@ func (s *Server) pingContainers() {
 	containers := make([]*containerInfo, 0, len(s.containersMap))
 	for _, cInfo := range s.containersMap {
 		// if container has a static domain configuration, we dont need to ping it
-		if cInfo.meta == nil || cInfo.meta.StaticDomain == "" {
+		if cInfo.container.Meta.Static.Domain == "" {
 			containers = append(containers, cInfo)
 		} else {
 			s.runner.Update(cInfo.container, &Endpoint{
-				Domain: cInfo.meta.StaticDomain,
-				Path:   cInfo.meta.StaticPath,
+				Domain: cInfo.container.Meta.Static.Domain,
+				Path:   cInfo.container.Meta.Static.Path,
 				Rules:  []Rule{},
 			})
 		}
@@ -246,7 +254,7 @@ func (s *Server) parseConfig(rc io.ReadCloser) (*Config, error) {
 	return config, nil
 }
 
-func (s *Server) addContainer(container *Container, meta *MetaData) {
+func (s *Server) addContainer(container *Container) {
 	_, ok := s.containersMap[container.Id]
 	if ok {
 		// usually this should not happen, but if it does, we can just
@@ -257,7 +265,6 @@ func (s *Server) addContainer(container *Container, meta *MetaData) {
 
 	s.containersMap[container.Id] = &containerInfo{
 		container: container,
-		meta:      meta,
 		domain:    "",
 		path:      "",
 	}

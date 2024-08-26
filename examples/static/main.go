@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -25,7 +26,10 @@ func main() {
 	id := generateRandomString(8)
 
 	http.HandleFunc("/api/v1", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Received from %s: %s\n", id, r.URL.Path)
+		for key, value := range r.Header {
+			fmt.Printf("%s: %s\n", key, strings.Join(value, ","))
+		}
+		fmt.Fprintf(w, "Received from %s: %s%s\n", id, r.Host, r.URL.Path)
 	})
 
 	fmt.Printf("Starting server at port 8000\n")

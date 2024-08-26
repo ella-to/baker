@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"strconv"
+	"strings"
 
 	"ella.to/baker"
 	"ella.to/baker/internal/httpclient"
@@ -18,23 +19,67 @@ type Docker struct {
 	close  chan struct{}
 }
 
-func (d *Docker) loadContainerById(ctx context.Context, id string) (*baker.Container, *baker.MetaData, error) {
+type Label struct {
+	Enable  bool
+	Network string
+	Service struct {
+		Port int
+		Ping string
+
+		Static struct {
+			Domain  string
+			Path    string
+			Headers map[string]string
+		}
+	}
+}
+
+func parseLabels(labels map[string]string) (*Label, error) {
+	var err error
+
+	l := &Label{}
+
+	for key, value := range labels {
+		switch key {
+		case "baker.enable":
+			l.Enable = strings.ToLower(value) == "true"
+		case "baker.network":
+			l.Network = value
+		case "baker.service.port":
+			l.Service.Port, err = strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse port because %s", err)
+			}
+
+		case "baker.service.ping":
+			l.Service.Ping = value
+		case "baker.service.static.domain":
+			l.Service.Static.Domain = value
+		case "baker.service.static.path":
+			l.Service.Static.Path = value
+		default:
+			if strings.HasPrefix(key, "baker.service.static.headers.") {
+				if l.Service.Static.Headers == nil {
+					l.Service.Static.Headers = make(map[string]string)
+				}
+				l.Service.Static.Headers[strings.TrimPrefix(key, "baker.service.static.headers.")] = value
+			}
+		}
+	}
+
+	return l, nil
+}
+
+func (d *Docker) loadContainerById(ctx context.Context, id string) (*baker.Container, error) {
 	r, _, err := d.getter(ctx, "/containers/"+id+"/json")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer r.Close()
 
 	payload := struct {
 		Config struct {
-			Labels struct {
-				Enable       string `json:"baker.enable"`
-				Network      string `json:"baker.network"`
-				ServicePort  string `json:"baker.service.port"`
-				ServicePing  string `json:"baker.service.ping"`
-				StaticDomain string `json:"baker.service.static.domain"`
-				StaticPath   string `json:"baker.service.static.path"`
-			} `json:"Labels"`
+			Labels map[string]string `json:"Labels"`
 		} `json:"Config"`
 		NetworkSettings struct {
 			Networks map[string]struct {
@@ -46,43 +91,45 @@ func (d *Docker) loadContainerById(ctx context.Context, id string) (*baker.Conta
 
 	err = json.NewDecoder(r).Decode(&payload)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	if payload.Config.Labels.Enable != "true" {
-		return nil, nil, fmt.Errorf("label 'baker.enable' is not set to true")
-	}
-
-	network, ok := payload.NetworkSettings.Networks[payload.Config.Labels.Network]
-	if !ok {
-		fmt.Println(payload.NetworkSettings.Networks)
-		return nil, nil, fmt.Errorf("network '%s' not exists in labels", payload.Config.Labels.Network)
-	}
-
-	port, err := strconv.ParseInt(payload.Config.Labels.ServicePort, 10, 32)
+	labels, err := parseLabels(payload.Config.Labels)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse port for container '%s' because %s", id, err)
+		return nil, fmt.Errorf("failed to parse labels for container '%s' because %s", id, err)
+	}
+
+	if !labels.Enable {
+		return nil, fmt.Errorf("label 'baker.enable' is not set to true")
+	}
+
+	network, ok := payload.NetworkSettings.Networks[labels.Network]
+	if !ok {
+		return nil, fmt.Errorf("network '%s' not exists in labels", labels.Network)
 	}
 
 	var addr netip.AddrPort
 
 	if network.IPAddress != "" {
-		addr, err = netip.ParseAddrPort(fmt.Sprintf("%s:%d", network.IPAddress, port))
+		addr, err = netip.ParseAddrPort(fmt.Sprintf("%s:%d", network.IPAddress, labels.Service.Port))
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to parse address for container '%s' because %s", id, err)
+			return nil, fmt.Errorf("failed to parse address for container '%s' because %s", id, err)
 		}
 	}
 
-	slog.Debug("docker driver loaded container", "id", id, "addr", addr, "config", payload.Config.Labels.ServicePing)
+	slog.Debug("docker driver loaded container", "id", id, "addr", addr, "config", labels.Service.Ping)
 
-	return &baker.Container{
-			Id:         id,
-			Addr:       addr,
-			ConfigPath: payload.Config.Labels.ServicePing,
-		}, &baker.MetaData{
-			StaticDomain: payload.Config.Labels.StaticDomain,
-			StaticPath:   payload.Config.Labels.StaticPath,
-		}, nil
+	container := &baker.Container{
+		Id:         id,
+		Addr:       addr,
+		ConfigPath: labels.Service.Ping,
+	}
+
+	container.Meta.Static.Domain = labels.Service.Static.Domain
+	container.Meta.Static.Path = labels.Service.Static.Path
+	container.Meta.Static.Headers = labels.Service.Static.Headers
+
+	return container, nil
 }
 
 func (d *Docker) loadCurrentContainers(ctx context.Context) {
@@ -113,13 +160,13 @@ func (d *Docker) loadCurrentContainers(ctx context.Context) {
 
 		slog.Debug("docker driver received current event", "id", event.ID, "state", event.State)
 
-		container, meta, err := d.loadContainerById(ctx, event.ID)
+		container, err := d.loadContainerById(ctx, event.ID)
 		if err != nil {
 			slog.Error("failed to load container", "id", event.ID, "error", err)
 			continue
 		}
 
-		d.driver.Add(container, meta)
+		d.driver.Add(container)
 	}
 }
 
@@ -157,13 +204,13 @@ func (d *Docker) loadFutureContainers(ctx context.Context) {
 			continue
 		}
 
-		container, meta, err := d.loadContainerById(ctx, event.ID)
+		container, err := d.loadContainerById(ctx, event.ID)
 		if err != nil {
 			slog.Error("failed to load container", "id", event.ID, "error", err)
 			continue
 		}
 
-		d.driver.Add(container, meta)
+		d.driver.Add(container)
 	}
 }
 

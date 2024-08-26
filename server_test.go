@@ -93,7 +93,7 @@ func TestServer(t *testing.T) {
 		driver = d
 	})
 
-	driver.Add(container1, nil)
+	driver.Add(container1)
 
 	// Wait for the server to process the container
 	time.Sleep(4 * time.Second)
@@ -143,7 +143,7 @@ func TestRateLimiter(t *testing.T) {
 		driver = d
 	})
 
-	driver.Add(container1, nil)
+	driver.Add(container1)
 
 	// Wait for the server to process the container
 	time.Sleep(4 * time.Second)
@@ -207,8 +207,8 @@ func TestMultiCalls(t *testing.T) {
 		driver = d
 	})
 
-	driver.Add(container1, nil)
-	driver.Add(container2, nil)
+	driver.Add(container1)
+	driver.Add(container2)
 
 	// Wait for the server to process the container
 	time.Sleep(4 * time.Second)

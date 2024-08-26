@@ -6,10 +6,19 @@ import (
 	"strings"
 )
 
+type Meta struct {
+	Static struct {
+		Domain  string
+		Path    string
+		Headers map[string]string
+	}
+}
+
 type Container struct {
 	Id         string
 	ConfigPath string
 	Addr       netip.AddrPort
+	Meta       Meta
 }
 
 type Endpoint struct {
@@ -41,12 +50,7 @@ type Service struct {
 	Endpoint   *Endpoint
 }
 
-type MetaData struct {
-	StaticDomain string
-	StaticPath   string
-}
-
 type Driver interface {
-	Add(*Container, *MetaData)
+	Add(*Container)
 	Remove(*Container)
 }

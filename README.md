@@ -78,6 +78,7 @@ services:
       - "baker.service.ping=/config"
       - "baker.service.static.domain=xyz.example.com" # only define this if service is not dyanmic
       - "baker.service.static.path=/*" # only define this if service is not dyanmic
+      - "baker.service.static.headers.host=xyz.example.com"
 
     networks:
       - baker

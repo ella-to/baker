@@ -8,6 +8,7 @@ services:
       - "baker.service.port=8000"
       - "baker.service.static.domain=example.com"
       - "baker.service.static.path=/*"
+      - "baker.service.static.headers.host=xyz.example.com"
 
     networks:
       - baker

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"ella.to/baker/internal/collection"
 	"ella.to/baker/internal/httpclient"
 	"ella.to/baker/internal/metrics"
@@ -62,32 +64,11 @@ func (t *trackResponseWriter) WriteHeader(code int) {
 	t.w.WriteHeader(code)
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	domain := r.Host
-	path := r.URL.Path
-	method := r.Method
+func isWebSocketRequest(r *http.Request) bool {
+	return strings.ToLower(r.Header.Get("Connection")) == "upgrade" && strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+}
 
-	tw := &trackResponseWriter{w: w}
-
-	start := time.Now()
-	defer func() {
-		metrics.HttpProcessedRequest(domain, path, method, tw.statusCode)
-		metrics.HttpRequestDuration(domain, path, method, tw.statusCode, float64(time.Since(start)))
-	}()
-
-	var container *Container
-	endpoint := &Endpoint{
-		Domain: domain,
-		Path:   path,
-	}
-
-	container, endpoint = s.runner.Get(r.Context(), endpoint)
-	if container == nil {
-		tw.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(tw, "not found, domain: %s, path: %s", domain, path)
-		return
-	}
-
+func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, container *Container, endpoint *Endpoint) {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			url := &url.URL{
@@ -118,7 +99,87 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rule.Chain(proxy, middlewares...).ServeHTTP(tw, r)
+	rule.Chain(proxy, middlewares...).ServeHTTP(w, r)
+}
+
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, container *Container) {
+	targetURL := &url.URL{
+		Scheme: "ws",
+		Host:   container.Addr.String(),
+		Path:   r.URL.Path,
+	}
+
+	clientConn, _, err := websocket.Dial(r.Context(), targetURL.String(), nil)
+	if err != nil {
+		http.Error(w, "Error connecting to backend server", http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close(websocket.StatusNormalClosure, "")
+
+	serverConn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		http.Error(w, "Error accepting WebSocket connection", http.StatusInternalServerError)
+		return
+	}
+	defer serverConn.Close(websocket.StatusNormalClosure, "")
+
+	// Proxy data between client and server
+	go func() {
+		for {
+			messageType, p, err := serverConn.Read(r.Context())
+			if err != nil {
+				return
+			}
+
+			if err := clientConn.Write(r.Context(), messageType, p); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		messageType, p, err := clientConn.Read(r.Context())
+		if err != nil {
+			return
+		}
+
+		if err := serverConn.Write(r.Context(), messageType, p); err != nil {
+			return
+		}
+	}
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	domain := r.Host
+	path := r.URL.Path
+	method := r.Method
+
+	tw := &trackResponseWriter{w: w}
+
+	start := time.Now()
+	defer func() {
+		metrics.HttpProcessedRequest(domain, path, method, tw.statusCode)
+		metrics.HttpRequestDuration(domain, path, method, tw.statusCode, float64(time.Since(start)))
+	}()
+
+	var container *Container
+	endpoint := &Endpoint{
+		Domain: domain,
+		Path:   path,
+	}
+
+	container, endpoint = s.runner.Get(r.Context(), endpoint)
+	if container == nil {
+		tw.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(tw, "not found, domain: %s, path: %s", domain, path)
+		return
+	}
+
+	if isWebSocketRequest(r) {
+		s.handleWebSocket(tw, r, container)
+	} else {
+		s.handleHTTP(tw, r, container, endpoint)
+	}
 }
 
 func (s *Server) Close() {

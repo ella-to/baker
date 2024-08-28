@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/coder/websocket v1.8.12
 	github.com/prometheus/client_golang v1.20.1
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/crypto v0.24.0

@@ -123,8 +123,19 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, contain
 		Path:   r.URL.Path,
 	}
 
+	host := r.Host
+
+	for k, v := range container.Meta.Static.Headers {
+		key := strings.ToUpper(k)
+		if key == "HOST" {
+			host = v
+			break
+		}
+	}
+
 	clientConn, _, err := websocket.Dial(r.Context(), targetURL.String(), &websocket.DialOptions{
 		HTTPHeader: r.Header,
+		Host:       host,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error connecting to backend server: %s", err), http.StatusInternalServerError)
@@ -132,7 +143,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, contain
 	}
 	defer clientConn.Close(websocket.StatusNormalClosure, "")
 
-	serverConn, err := websocket.Accept(w, r, nil)
+	serverConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error connecting to backend server: %s", err), http.StatusInternalServerError)
 		return

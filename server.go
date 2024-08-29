@@ -217,10 +217,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tw := &trackResponseWriter{w: w}
 
 	start := time.Now()
-	defer func() {
-		metrics.HttpProcessedRequest(domain, path, method, tw.statusCode)
-		metrics.HttpRequestDuration(domain, path, method, tw.statusCode, float64(time.Since(start)))
-	}()
 
 	var container *Container
 	endpoint := &Endpoint{
@@ -236,8 +232,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isWebSocketRequest(r) {
+		defer func() {
+			metrics.WebsocketRequest(domain, path, method, tw.statusCode)
+		}()
 		s.handleWebSocket(tw, r, container)
 	} else {
+		defer func() {
+			metrics.HttpRequestCount(domain, path, method, tw.statusCode)
+			metrics.HttpRequestDuration(domain, path, method, tw.statusCode, float64(time.Since(start)))
+		}()
 		s.handleHTTP(tw, r, container, endpoint)
 	}
 }

@@ -49,6 +49,7 @@ https://ella.to/baker
 	slog.SetLogLoggerLevel(parseLogLevel(logLevel))
 
 	metricsHandler := metrics.SetupHandler()
+	metrics.SetInfo(Version, GitCommit)
 
 	dockerGetter, err := httpclient.NewClient(
 		httpclient.WithUnixSock("/var/run/docker.sock", "http://localhost"),

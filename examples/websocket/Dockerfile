@@ -5,9 +5,9 @@ WORKDIR /websocket
 
 COPY . .
 
-RUN go build -o websocket-server /websocket/server/main.go
+RUN go build -o server /websocket/main.go
 
 ### run stage ###
 FROM alpine:latest
-COPY --from=builder /websocket/websocket-server ./websocket-server
-CMD ["./websocket-server"]
+COPY --from=builder /websocket/server ./server
+CMD ["./server"]

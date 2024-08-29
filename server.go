@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -138,30 +139,61 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, contain
 	}
 	defer serverConn.Close(websocket.StatusNormalClosure, "")
 
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
 	// Proxy data between client and server
 	go func() {
-		for {
-			messageType, p, err := serverConn.Read(r.Context())
-			if err != nil {
-				return
-			}
+		defer cancel()
 
-			if err := clientConn.Write(r.Context(), messageType, p); err != nil {
+		for {
+			err = copyWebsocketStream(ctx, clientConn, serverConn)
+			if err != nil {
+				slog.Error("failed to copy data between server and client", "error", err)
 				return
 			}
 		}
 	}()
 
 	for {
-		messageType, p, err := clientConn.Read(r.Context())
+		err = copyWebsocketStream(ctx, serverConn, clientConn)
 		if err != nil {
-			return
-		}
-
-		if err := serverConn.Write(r.Context(), messageType, p); err != nil {
+			slog.Error("failed to copy data between client and server", "error", err)
 			return
 		}
 	}
+}
+
+func copyWebsocketStream(ctx context.Context, dst, src *websocket.Conn) error {
+	var msgType websocket.MessageType
+	var r io.Reader
+	var w io.WriteCloser
+	var err error
+
+	for {
+		msgType, r, err = src.Reader(ctx)
+		if err != nil {
+			break
+		}
+
+		w, err = dst.Writer(ctx, msgType)
+		if err != nil {
+			break
+		}
+
+		_, err = io.Copy(w, r)
+		if err != nil {
+			break
+		}
+	}
+
+	if errors.Is(err, context.Canceled) {
+		return nil
+	} else if errors.Is(err, io.EOF) {
+		return nil
+	}
+
+	return err
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

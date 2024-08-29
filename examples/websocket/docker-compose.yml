@@ -1,0 +1,22 @@
+services:
+  example-static-service:
+    build: .
+
+    labels:
+      - "baker.enable=true"
+      - "baker.network=baker"
+      - "baker.service.port=8000"
+      - "baker.service.static.domain=example.com"
+      - "baker.service.static.path=/*"
+      - "baker.service.static.headers.host=xyz.example.com"
+
+    networks:
+      - baker
+    
+    ports:
+      - "3000:3000"
+
+networks:
+  baker:
+    name: baker
+    external: true     

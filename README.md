@@ -25,6 +25,7 @@ Baker is a dynamic HTTP reverse proxy with a focus on extensibility and flexibil
 - Configurable rate limiter per domain and path.
 - Prometheus metrics are available at `BAKER_METRICS_ADDRS/metrics`
 - Static Configuration for those services that doesn't expose any config path
+- Support Proxy WebSocket
 
 # Usage
 

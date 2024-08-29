@@ -1,12 +1,14 @@
 package baker
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -47,6 +49,17 @@ var _ http.Handler = (*Server)(nil)
 type trackResponseWriter struct {
 	statusCode int
 	w          http.ResponseWriter
+}
+
+var _ http.Hijacker = (*trackResponseWriter)(nil)
+
+func (t *trackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := t.w.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+
+	return h.Hijack()
 }
 
 var _ http.ResponseWriter = (*trackResponseWriter)(nil)
@@ -111,14 +124,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, contain
 
 	clientConn, _, err := websocket.Dial(r.Context(), targetURL.String(), nil)
 	if err != nil {
-		http.Error(w, "Error connecting to backend server", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error connecting to backend server: %s", err), http.StatusInternalServerError)
 		return
 	}
 	defer clientConn.Close(websocket.StatusNormalClosure, "")
 
 	serverConn, err := websocket.Accept(w, r, nil)
 	if err != nil {
-		http.Error(w, "Error accepting WebSocket connection", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error connecting to backend server: %s", err), http.StatusInternalServerError)
 		return
 	}
 	defer serverConn.Close(websocket.StatusNormalClosure, "")

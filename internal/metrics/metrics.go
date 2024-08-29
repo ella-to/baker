@@ -49,7 +49,7 @@ func SetInfo(version, commit string) {
 	}).Set(1)
 }
 
-func HttpRequestCount(domain string, method string, path string, code int) {
+func HttpRequestCount(domain string, path string, method string, code int) {
 	httpRequestCount.With(prometheus.Labels{
 		"domain": domain,
 		"method": method,
@@ -58,7 +58,7 @@ func HttpRequestCount(domain string, method string, path string, code int) {
 	}).Inc()
 }
 
-func HttpRequestDuration(domain string, method string, path string, code int, duration float64) {
+func HttpRequestDuration(domain string, path string, method string, code int, duration float64) {
 	httpRequestDuration.With(prometheus.Labels{
 		"domain": domain,
 		"method": method,
@@ -67,7 +67,7 @@ func HttpRequestDuration(domain string, method string, path string, code int, du
 	}).Observe(duration)
 }
 
-func WebsocketRequest(domain string, method string, path string, code int) {
+func WebsocketRequest(domain string, path string, method string, code int) {
 	websocketRequestCount.With(prometheus.Labels{
 		"domain": domain,
 		"method": method,

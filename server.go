@@ -122,7 +122,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, contain
 		Path:   r.URL.Path,
 	}
 
-	clientConn, _, err := websocket.Dial(r.Context(), targetURL.String(), nil)
+	clientConn, _, err := websocket.Dial(r.Context(), targetURL.String(), &websocket.DialOptions{
+		HTTPHeader: r.Header,
+	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error connecting to backend server: %s", err), http.StatusInternalServerError)
 		return

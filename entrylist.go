@@ -41,10 +41,12 @@ func (e *entryList) New(domain, path string, ready bool) *entryList {
 	return e
 }
 
-func (e *entryList) WithRules(rules ...struct {
-	Type string `json:"type"`
-	Args any    `json:"args"`
-}) *entryList {
+func (e *entryList) WithRules(
+	rules ...struct {
+		Type string `json:"type"`
+		Args any    `json:"args"`
+	},
+) *entryList {
 	if len(e.collection) == 0 {
 		return e
 	}
@@ -73,10 +75,10 @@ func (e *entryList) WriteResponse(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if len(e.cahced) > 0 {
-		w.Write(e.cahced)
+		_, _ = w.Write(e.cahced)
 		return
 	}
-	json.NewEncoder(w).Encode(e.getPayload())
+	_ = json.NewEncoder(w).Encode(e.getPayload())
 }
 
 func NewEntryList() *entryList {

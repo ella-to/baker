@@ -52,9 +52,9 @@ func Start(handler http.Handler, cachePath string) error {
 
 	select {
 	case <-httpClose:
-		httpsServer.Shutdown(context.Background())
+		_ = httpsServer.Shutdown(context.Background())
 	case <-httpsClose:
-		httpServer.Shutdown(context.Background())
+		_ = httpServer.Shutdown(context.Background())
 	}
 
 	select {

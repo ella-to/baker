@@ -47,7 +47,7 @@ func (r *RateLimiter) IsCachable() bool {
 	return true
 }
 
-func (r *RateLimiter) UpdateMiddelware(newImpl Middleware) Middleware {
+func (r *RateLimiter) UpdateMiddleware(newImpl Middleware) Middleware {
 	if newImpl == nil {
 		slog.Debug(
 			"initializing for the first time",

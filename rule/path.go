@@ -19,7 +19,7 @@ func (a *AppendPath) IsCachable() bool {
 	return false
 }
 
-func (a *AppendPath) UpdateMiddelware(newImpl Middleware) Middleware {
+func (a *AppendPath) UpdateMiddleware(newImpl Middleware) Middleware {
 	return nil
 }
 
@@ -82,7 +82,7 @@ func (p *ReplacePath) IsCachable() bool {
 	return false
 }
 
-func (p *ReplacePath) UpdateMiddelware(newImpl Middleware) Middleware {
+func (p *ReplacePath) UpdateMiddleware(newImpl Middleware) Middleware {
 	return nil
 }
 

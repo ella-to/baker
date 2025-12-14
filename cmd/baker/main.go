@@ -18,8 +18,10 @@ import (
 	"ella.to/baker/rule"
 )
 
-var Version = "master"
-var GitCommit = "development"
+var (
+	Version   = "master"
+	GitCommit = "development"
+)
 
 func main() {
 	fmt.Fprintf(os.Stdout, `
@@ -77,7 +79,12 @@ https://ella.to/baker
 		Handler: metricsHandler,
 	}
 
-	defer metricsServer.Shutdown(context.Background())
+	defer func() {
+		shutdownErr := metricsServer.Shutdown(context.Background())
+		if shutdownErr != nil {
+			slog.Error("failed to shutdown metrics server", "error", shutdownErr)
+		}
+	}()
 
 	go func() {
 		slog.Info("starting metrics server", "addr", metricsAddr)

@@ -275,10 +275,10 @@ func (s *Server) getMiddlewares(endpoint *Endpoint) ([]rule.Middleware, error) {
 		if middleware.IsCachable() {
 			middleware = s.middlewareCacheMap.GetAndUpdate(endpoint.getHashKey(), func(old rule.Middleware, found bool) rule.Middleware {
 				if found {
-					return old.UpdateMiddelware(middleware)
+					return old.UpdateMiddleware(middleware)
 				}
 
-				return middleware.UpdateMiddelware(nil)
+				return middleware.UpdateMiddleware(nil)
 			})
 		}
 

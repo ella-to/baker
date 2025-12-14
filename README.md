@@ -238,4 +238,4 @@ When the limit is exceeded, clients receive a `429 Too Many Requests` response.
 
 ## License
 
-Baker is licensed under the [Apache License 2.0](LICENSE.md).
+Baker is licensed under the [MIT LICENSE](LICENSE.md).

@@ -11,8 +11,10 @@ func Limit(requestLimit int, windowLength time.Duration, options ...Option) func
 	return NewRateLimiter(requestLimit, windowLength, options...).Handler
 }
 
-type KeyFunc func(r *http.Request) (string, error)
-type Option func(rl *rateLimiter)
+type (
+	KeyFunc func(r *http.Request) (string, error)
+	Option  func(rl *rateLimiter)
+)
 
 func LimitAll(requestLimit int, windowLength time.Duration) func(next http.Handler) http.Handler {
 	return Limit(requestLimit, windowLength)
@@ -124,7 +126,6 @@ func canonicalizeIP(ip string) string {
 		case ':':
 			// IPv6
 			isIPv6 = true
-			break
 		}
 	}
 	if !isIPv6 {

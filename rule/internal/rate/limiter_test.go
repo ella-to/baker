@@ -147,7 +147,7 @@ func TestLimitHandler(t *testing.T) {
 					t.Errorf("resp.StatusCode(%v) = %v, want %v", i, respStatus, expected.StatusCode)
 				}
 				buf := new(bytes.Buffer)
-				buf.ReadFrom(result.Body)
+				_, _ = buf.ReadFrom(result.Body)
 				respBody := strings.TrimSuffix(buf.String(), "\n")
 
 				if respBody != expected.Body {

@@ -14,6 +14,7 @@ const (
 	updateEvent
 	removeEvent
 	getEvent
+	hasDomainEvent
 )
 
 type Event struct {
@@ -27,11 +28,12 @@ type Event struct {
 }
 
 type ActionRunner struct {
-	pingerCallback func()
-	addCallback    func(*Container)
-	updateCallback func(*Container, *Endpoint)
-	removeCallback func(*Container)
-	getCallback    func(string, string) (*Container, *Endpoint)
+	pingerCallback    func()
+	addCallback       func(*Container)
+	updateCallback    func(*Container, *Endpoint)
+	removeCallback    func(*Container)
+	getCallback       func(string, string) (*Container, *Endpoint)
+	hasDomainCallback func(string) bool
 
 	events chan *Event
 	close  chan struct{} // using this to make sure pushing to events stops when Close() is called
@@ -74,6 +76,28 @@ func (ar *ActionRunner) Get(ctx context.Context, endpoint *Endpoint) (*Container
 		return nil, nil
 	case <-ar.close:
 		return nil, nil
+	}
+}
+
+func (ar *ActionRunner) HasDomain(ctx context.Context, domain string) bool {
+	evt := &Event{
+		Type:     hasDomainEvent,
+		Endpoint: &Endpoint{Domain: domain},
+		Result: make(chan struct {
+			Container *Container
+			Endpoint  *Endpoint
+		}, 1),
+	}
+
+	ar.push(evt)
+
+	select {
+	case r := <-evt.Result:
+		return r.Container != nil
+	case <-ctx.Done():
+		return false
+	case <-ar.close:
+		return false
 	}
 }
 
@@ -121,6 +145,12 @@ func WithGetCallback(callback func(string, string) (*Container, *Endpoint)) func
 	}
 }
 
+func WithHasDomainCallback(callback func(string) bool) func(*ActionRunner) {
+	return func(ar *ActionRunner) {
+		ar.hasDomainCallback = callback
+	}
+}
+
 type ActionCallback func(*ActionRunner)
 
 func NewActionRunner(bufferSize int, cbs ...ActionCallback) *ActionRunner {
@@ -160,6 +190,15 @@ func NewActionRunner(bufferSize int, cbs ...ActionCallback) *ActionRunner {
 						Container *Container
 						Endpoint  *Endpoint
 					}{container, endpoint}
+				case hasDomainEvent:
+					var result *Container
+					if ar.hasDomainCallback(event.Endpoint.Domain) {
+						result = &Container{} // non-nil to indicate true
+					}
+					event.Result <- struct {
+						Container *Container
+						Endpoint  *Endpoint
+					}{result, nil}
 				default:
 					continue
 				}

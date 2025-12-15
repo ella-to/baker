@@ -155,11 +155,11 @@ func createBenchContainer(tb testing.TB, domain, path string) *baker.Container {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/config" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(config))
+			_, _ = w.Write([]byte(config))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 
 	tb.Cleanup(server.Close)
@@ -181,7 +181,7 @@ func createBenchContainerWithRateLimiter(tb testing.TB) *baker.Container {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/config" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{
+			_, _ = w.Write([]byte(`{
 				"endpoints":[{
 					"domain":"ratelimit.example.com",
 					"path":"/*",
@@ -191,7 +191,7 @@ func createBenchContainerWithRateLimiter(tb testing.TB) *baker.Container {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 
 	tb.Cleanup(server.Close)

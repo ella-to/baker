@@ -96,7 +96,13 @@ https://ella.to/baker
 
 	if acmeEnable {
 		slog.Info("starting acme server", "addr", acmePath)
-		err := acme.Start(handler, acmePath)
+		err := acme.Start(handler, acmePath, func(ctx context.Context, host string) error {
+			if handler.HasDomain(ctx, host) {
+				return nil
+			}
+			slog.Warn("acme: rejecting certificate request for unregistered domain", "host", host)
+			return acme.ErrHostNotAllowed
+		})
 		if err != nil {
 			slog.Error("failed to start acme", "error", err)
 			os.Exit(1)

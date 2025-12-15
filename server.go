@@ -495,6 +495,17 @@ func (s *Server) getContainer(domain, path string) (container *Container, endpoi
 	return service.Containers[pos], service.Endpoint
 }
 
+// HasDomain checks if a domain is registered with the server.
+// This can be used by ACME to validate domains before requesting certificates.
+func (s *Server) HasDomain(ctx context.Context, domain string) bool {
+	return s.runner.HasDomain(ctx, domain)
+}
+
+func (s *Server) hasDomain(domain string) bool {
+	_, ok := s.domainsMap[domain]
+	return ok
+}
+
 type serverOpt interface {
 	configureServer(*Server) error
 }
@@ -560,6 +571,7 @@ func NewServer(opts ...serverOpt) *Server {
 		WithUpdateCallback(s.updateContainer),
 		WithRemoveCallback(s.removeContainer),
 		WithGetCallback(s.getContainer),
+		WithHasDomainCallback(s.hasDomain),
 	)
 
 	go func() {

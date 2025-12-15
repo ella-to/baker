@@ -25,12 +25,12 @@ func createDummyContainerRaw(t *testing.T, config string) *baker.Container {
 
 		if r.URL.Path == "/config" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(config))
+			_, _ = w.Write([]byte(config))
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("hello world"))
+		_, _ = w.Write([]byte("hello world"))
 	}))
 
 	t.Cleanup(server.Close)

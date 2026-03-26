@@ -212,6 +212,6 @@ func (c *localCounter) evict() {
 func LimitCounterKey(key string, window time.Time) uint64 {
 	h := xxhash.New()
 	_, _ = h.WriteString(key)
-	_, _ = h.WriteString(fmt.Sprintf("%d", window.Unix()))
+	fmt.Fprintf(h, "%d", window.Unix())
 	return h.Sum64()
 }

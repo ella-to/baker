@@ -217,7 +217,12 @@ Adds prefixes and/or suffixes to the request path.
 
 ### RateLimiter
 
-Applies rate limiting per client IP address.
+Applies rate limiting per client IP address. Supports two algorithms:
+
+- **Sliding Window** (`window`): Smooths out bursts by considering requests from the previous window. Default algorithm.
+- **Token Bucket** (`bucket`): Allows controlled bursts up to the bucket capacity, with tokens refilling over time.
+
+**Sliding Window (default):**
 
 ```json
 {
@@ -229,10 +234,24 @@ Applies rate limiting per client IP address.
 }
 ```
 
+**Token Bucket:**
+
+```json
+{
+  "type": "RateLimiter",
+  "args": {
+    "algo": "bucket",
+    "request_limit": 100,
+    "window_duration": "60s"
+  }
+}
+```
+
 | Argument | Type | Description |
 |----------|------|-------------|
-| `request_limit` | integer | Maximum requests per window |
-| `window_duration` | string | Time window (e.g., `60s`, `1m`, `1h`) |
+| `algo` | string | Algorithm: `window` (default) or `bucket` |
+| `request_limit` | integer | Maximum requests per window / bucket capacity |
+| `window_duration` | string | Time window or refill duration (e.g., `60s`, `1m`, `1h`) |
 
 When the limit is exceeded, clients receive a `429 Too Many Requests` response.
 

@@ -10,6 +10,16 @@ import (
 	"ella.to/baker/rule/internal/rate"
 )
 
+// RateLimiterAlgo defines the algorithm used for rate limiting.
+type RateLimiterAlgo string
+
+const (
+	// RateLimiterAlgoWindow uses a sliding window algorithm (default).
+	RateLimiterAlgoWindow RateLimiterAlgo = "window"
+	// RateLimiterAlgoBucket uses a token bucket algorithm.
+	RateLimiterAlgoBucket RateLimiterAlgo = "bucket"
+)
+
 type WindowDuration struct {
 	time.Duration
 }
@@ -36,8 +46,9 @@ func (d *WindowDuration) UnmarshalJSON(data []byte) error {
 }
 
 type RateLimiter struct {
-	RequestLimit   int            `json:"request_limit"`
-	WindowDuration WindowDuration `json:"window_duration"`
+	Algo           RateLimiterAlgo `json:"algo,omitempty"`
+	RequestLimit   int             `json:"request_limit"`
+	WindowDuration WindowDuration  `json:"window_duration"`
 	middle         func(next http.Handler) http.Handler
 }
 
@@ -47,16 +58,35 @@ func (r *RateLimiter) IsCachable() bool {
 	return true
 }
 
+// getAlgo returns the algorithm to use, defaulting to window if not specified.
+func (r *RateLimiter) getAlgo() RateLimiterAlgo {
+	if r.Algo == "" {
+		return RateLimiterAlgoWindow
+	}
+	return r.Algo
+}
+
+// createMiddleware creates the appropriate rate limiter middleware based on the algorithm.
+func (r *RateLimiter) createMiddleware() func(next http.Handler) http.Handler {
+	switch r.getAlgo() {
+	case RateLimiterAlgoBucket:
+		return rate.BucketLimitByIP(r.RequestLimit, r.WindowDuration.Duration)
+	default:
+		return rate.LimitByIP(r.RequestLimit, r.WindowDuration.Duration)
+	}
+}
+
 func (r *RateLimiter) UpdateMiddleware(newImpl Middleware) Middleware {
 	if newImpl == nil {
 		slog.Debug(
 			"initializing for the first time",
 			"type", "RateLimiter",
+			"algo", r.getAlgo(),
 			"request_limit", r.RequestLimit,
 			"window_duration", r.WindowDuration.Duration,
 		)
 
-		r.middle = rate.LimitByIP(r.RequestLimit, r.WindowDuration.Duration)
+		r.middle = r.createMiddleware()
 		return r
 	}
 
@@ -68,6 +98,7 @@ func (r *RateLimiter) UpdateMiddleware(newImpl Middleware) Middleware {
 
 	if r.RequestLimit == newR.RequestLimit &&
 		r.WindowDuration == newR.WindowDuration &&
+		r.getAlgo() == newR.getAlgo() &&
 		r.middle != nil {
 		return r
 	}
@@ -75,14 +106,16 @@ func (r *RateLimiter) UpdateMiddleware(newImpl Middleware) Middleware {
 	slog.Debug(
 		"updating middleware",
 		"type", "RateLimiter",
+		"algo", newR.getAlgo(),
 		"request_limit", newR.RequestLimit,
 		"window_duration", newR.WindowDuration.Duration,
 	)
 
+	r.Algo = newR.Algo
 	r.RequestLimit = newR.RequestLimit
 	r.WindowDuration = newR.WindowDuration
 
-	r.middle = rate.LimitByIP(r.RequestLimit, r.WindowDuration.Duration)
+	r.middle = r.createMiddleware()
 
 	return r
 }
@@ -91,16 +124,21 @@ func (r *RateLimiter) Process(next http.Handler) http.Handler {
 	return r.middle(next)
 }
 
-func NewRateLimiter(requestLimit int, windowDuration time.Duration) struct {
+func NewRateLimiter(requestLimit int, windowDuration time.Duration, algo ...RateLimiterAlgo) struct {
 	Type string `json:"type"`
 	Args any    `json:"args"`
 } {
+	var a RateLimiterAlgo
+	if len(algo) > 0 && algo[0] != RateLimiterAlgoWindow {
+		a = algo[0]
+	}
 	return struct {
 		Type string `json:"type"`
 		Args any    `json:"args"`
 	}{
 		Type: "RateLimiter",
 		Args: RateLimiter{
+			Algo:         a,
 			RequestLimit: requestLimit,
 			WindowDuration: WindowDuration{
 				Duration: windowDuration,

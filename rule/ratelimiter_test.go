@@ -99,6 +99,54 @@ func TestRateLimiterIntegration(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
 	})
+
+	t.Run("bucket algorithm allows requests within limit", func(t *testing.T) {
+		rl := &rule.RateLimiter{
+			Algo:           rule.RateLimiterAlgoBucket,
+			RequestLimit:   5,
+			WindowDuration: rule.WindowDuration{Duration: time.Minute},
+		}
+		rl.UpdateMiddleware(nil)
+
+		handler := rl.Process(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		for i := 0; i < 5; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req.RemoteAddr = "192.168.1.3:12345"
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			assert.Equal(t, http.StatusOK, rr.Code)
+		}
+	})
+
+	t.Run("bucket algorithm blocks requests exceeding limit", func(t *testing.T) {
+		rl := &rule.RateLimiter{
+			Algo:           rule.RateLimiterAlgoBucket,
+			RequestLimit:   2,
+			WindowDuration: rule.WindowDuration{Duration: time.Minute},
+		}
+		rl.UpdateMiddleware(nil)
+
+		handler := rl.Process(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		for i := 0; i < 2; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req.RemoteAddr = "192.168.1.4:12345"
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			assert.Equal(t, http.StatusOK, rr.Code)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.RemoteAddr = "192.168.1.4:12345"
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+	})
 }
 
 func TestRegisterRateLimiter(t *testing.T) {
@@ -109,24 +157,62 @@ func TestRegisterRateLimiter(t *testing.T) {
 	builder, ok := m["RateLimiter"]
 	require.True(t, ok)
 
-	middleware, err := builder(json.RawMessage(`{"request_limit":100,"window_duration":"1m"}`))
-	require.NoError(t, err)
+	t.Run("window algorithm (default)", func(t *testing.T) {
+		middleware, err := builder(json.RawMessage(`{"request_limit":100,"window_duration":"1m"}`))
+		require.NoError(t, err)
 
-	rl, ok := middleware.(*rule.RateLimiter)
-	require.True(t, ok)
-	assert.Equal(t, 100, rl.RequestLimit)
-	assert.Equal(t, time.Minute, rl.WindowDuration.Duration)
+		rl, ok := middleware.(*rule.RateLimiter)
+		require.True(t, ok)
+		assert.Equal(t, 100, rl.RequestLimit)
+		assert.Equal(t, time.Minute, rl.WindowDuration.Duration)
+		assert.Equal(t, rule.RateLimiterAlgo(""), rl.Algo) // defaults to window when empty
+	})
+
+	t.Run("window algorithm explicit", func(t *testing.T) {
+		middleware, err := builder(json.RawMessage(`{"algo":"window","request_limit":100,"window_duration":"1m"}`))
+		require.NoError(t, err)
+
+		rl, ok := middleware.(*rule.RateLimiter)
+		require.True(t, ok)
+		assert.Equal(t, rule.RateLimiterAlgoWindow, rl.Algo)
+	})
+
+	t.Run("bucket algorithm", func(t *testing.T) {
+		middleware, err := builder(json.RawMessage(`{"algo":"bucket","request_limit":50,"window_duration":"30s"}`))
+		require.NoError(t, err)
+
+		rl, ok := middleware.(*rule.RateLimiter)
+		require.True(t, ok)
+		assert.Equal(t, rule.RateLimiterAlgoBucket, rl.Algo)
+		assert.Equal(t, 50, rl.RequestLimit)
+		assert.Equal(t, 30*time.Second, rl.WindowDuration.Duration)
+	})
 }
 
 func TestNewRateLimiter(t *testing.T) {
-	r := rule.NewRateLimiter(50, 30*time.Second)
+	t.Run("default algorithm (window)", func(t *testing.T) {
+		r := rule.NewRateLimiter(50, 30*time.Second)
 
-	assert.Equal(t, "RateLimiter", r.Type)
+		assert.Equal(t, "RateLimiter", r.Type)
 
-	args, ok := r.Args.(rule.RateLimiter)
-	require.True(t, ok)
-	assert.Equal(t, 50, args.RequestLimit)
-	assert.Equal(t, 30*time.Second, args.WindowDuration.Duration)
+		args, ok := r.Args.(rule.RateLimiter)
+		require.True(t, ok)
+		assert.Equal(t, 50, args.RequestLimit)
+		assert.Equal(t, 30*time.Second, args.WindowDuration.Duration)
+		assert.Equal(t, rule.RateLimiterAlgo(""), args.Algo) // empty string, defaults to window
+	})
+
+	t.Run("bucket algorithm", func(t *testing.T) {
+		r := rule.NewRateLimiter(100, time.Minute, rule.RateLimiterAlgoBucket)
+
+		assert.Equal(t, "RateLimiter", r.Type)
+
+		args, ok := r.Args.(rule.RateLimiter)
+		require.True(t, ok)
+		assert.Equal(t, 100, args.RequestLimit)
+		assert.Equal(t, time.Minute, args.WindowDuration.Duration)
+		assert.Equal(t, rule.RateLimiterAlgoBucket, args.Algo)
+	})
 }
 
 func BenchmarkRateLimiterProcess(b *testing.B) {

@@ -31,7 +31,7 @@
 | 🔧 **Extensible** | Exposed interfaces for most components |
 | 🔀 **Middleware** | Modify incoming and outgoing traffic with built-in or custom middleware |
 | ⚖️ **Load Balancing** | Built-in load balancing across service instances |
-| 🔒 **Auto SSL** | Automatic certificate creation and renewal via Let's Encrypt |
+| 🔒 **Auto SSL** | Automatic HTTPS: Let's Encrypt for public domains + local CA certs for `*.localhost` |
 | 🚦 **Rate Limiting** | Configurable rate limiter per domain and path |
 | 📊 **Metrics** | Prometheus metrics available at `/metrics` endpoint |
 | 📋 **Static Config** | Support for services without dynamic configuration endpoints |
@@ -103,7 +103,7 @@ networks:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BAKER_ACME` | `NO` | Enable Let's Encrypt automatic SSL |
+| `BAKER_ACME` | `NO` | Enable HTTPS (`YES`): Let's Encrypt for public domains and local certificates for `*.localhost` |
 | `BAKER_ACME_PATH` | `/acme/cert` | Directory for SSL certificates |
 | `BAKER_LOG_LEVEL` | `INFO` | Logging level |
 | `BAKER_BUFFER_SIZE` | `100` | Docker event buffer size |
@@ -162,6 +162,33 @@ Your service should expose a REST endpoint (specified by `baker.service.ping`) t
 | `path` | string | Path pattern (supports `*` wildcard) |
 | `ready` | boolean | Whether the route is active |
 | `rules` | array | Optional middleware rules |
+
+## HTTPS for Localhost Domains
+
+When `BAKER_ACME=YES`, Baker supports both public and local development HTTPS:
+
+- Public domains (e.g. `api.example.com`) use Let's Encrypt certificates.
+- Localhost domains (e.g. `app.localhost`, `api.localhost`) use certificates generated locally by Baker.
+
+Localhost certificate files are written under:
+
+- `<BAKER_ACME_PATH>/localhost/ca.crt`
+- `<BAKER_ACME_PATH>/localhost/*.crt`
+- `<BAKER_ACME_PATH>/localhost/*.key`
+
+To trust localhost certificates on macOS (system-wide, requires admin):
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <BAKER_ACME_PATH>/localhost/ca.crt
+```
+
+To trust without sudo for only the current user (login keychain):
+
+```bash
+security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db <BAKER_ACME_PATH>/localhost/ca.crt
+```
+
+After trusting the CA, domains that are already registered in Baker (for example via labels or dynamic config) can be served over HTTPS as `https://<name>.localhost`.
 
 ## Middleware
 

@@ -95,7 +95,11 @@ https://ella.to/baker
 	}()
 
 	if acmeEnable {
-		slog.Info("starting acme server", "addr", acmePath)
+		slog.Info(
+			"starting tls server",
+			"acme_cache_path", acmePath,
+			"localhost_ca_cert_path", acme.LocalhostCAPath(acmePath),
+		)
 		err := acme.Start(handler, acmePath, func(ctx context.Context, host string) error {
 			if handler.HasDomain(ctx, host) {
 				return nil

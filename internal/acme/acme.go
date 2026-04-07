@@ -22,10 +22,22 @@ func Start(handler http.Handler, cachePath string, hostPolicy HostPolicy) error 
 		cachePath = "."
 	}
 
+	localhostManager, err := newLocalhostCertManager(cachePath)
+	if err != nil {
+		return err
+	}
+
 	certManager := autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		Cache:      autocert.DirCache(cachePath),
-		HostPolicy: autocert.HostPolicy(hostPolicy),
+		Prompt: autocert.AcceptTOS,
+		Cache:  autocert.DirCache(cachePath),
+		HostPolicy: func(ctx context.Context, host string) error {
+			host = normalizeHost(host)
+			if hostPolicy == nil {
+				return nil
+			}
+
+			return hostPolicy(ctx, host)
+		},
 	}
 
 	httpsServer := &http.Server{
@@ -34,7 +46,20 @@ func Start(handler http.Handler, cachePath string, hostPolicy HostPolicy) error 
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 		TLSConfig: &tls.Config{
-			GetCertificate: certManager.GetCertificate,
+			GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				host := normalizeHost(chi.ServerName)
+				if isLocalhostHost(host) {
+					if hostPolicy != nil {
+						if err := hostPolicy(context.Background(), host); err != nil {
+							return nil, err
+						}
+					}
+
+					return localhostManager.GetCertificate(chi)
+				}
+
+				return certManager.GetCertificate(chi)
+			},
 		},
 	}
 
@@ -51,12 +76,18 @@ func Start(handler http.Handler, cachePath string, hostPolicy HostPolicy) error 
 
 	go func() {
 		defer close(httpClose)
-		errs <- httpServer.ListenAndServe()
+		err := httpServer.ListenAndServe()
+		if !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+		}
 	}()
 
 	go func() {
 		defer close(httpsClose)
-		errs <- httpsServer.ListenAndServeTLS("", "")
+		err := httpsServer.ListenAndServeTLS("", "")
+		if !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+		}
 	}()
 
 	select {

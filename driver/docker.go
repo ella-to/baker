@@ -3,7 +3,9 @@ package driver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/netip"
 	"strconv"
@@ -189,6 +191,14 @@ func (d *Docker) loadFutureContainers(ctx context.Context) {
 		event.Status = ""
 
 		if err := decoder.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				return
+			}
+
+			if ctx.Err() != nil {
+				return
+			}
+
 			slog.Error("failed to decode event", "error", err)
 			continue
 		}

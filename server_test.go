@@ -1,6 +1,7 @@
 package baker_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -227,6 +228,37 @@ func TestMultiCalls(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestStaticDomainRegisteredImmediately(t *testing.T) {
+	server, _ := createBakerServer(t)
+
+	var driver baker.Driver
+
+	server.RegisterDriver(func(d baker.Driver) {
+		driver = d
+	})
+
+	driver.Add(&baker.Container{
+		Id: "static-container-1",
+		Meta: baker.Meta{
+			Static: struct {
+				Domain  string
+				Path    string
+				Headers map[string]string
+			}{
+				Domain: "metrics.jetdrive.io",
+				Path:   "/*",
+			},
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if !server.HasDomain(ctx, "metrics.jetdrive.io") {
+		t.Fatal("expected static domain to be registered immediately")
+	}
 }
 
 func makeCall(url, path, host string) error {

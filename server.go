@@ -296,11 +296,7 @@ func (s *Server) pingContainers() {
 		if cInfo.container.Meta.Static.Domain == "" {
 			containers = append(containers, cInfo)
 		} else {
-			s.runner.Update(cInfo.container, &Endpoint{
-				Domain: cInfo.container.Meta.Static.Domain,
-				Path:   cInfo.container.Meta.Static.Path,
-				Rules:  []Rule{},
-			})
+			s.registerStaticContainer(cInfo.container)
 		}
 	}
 
@@ -392,6 +388,20 @@ func (s *Server) addContainer(container *Container) {
 		domain:    "",
 		path:      "",
 	}
+
+	s.registerStaticContainer(container)
+}
+
+func (s *Server) registerStaticContainer(container *Container) {
+	if container.Meta.Static.Domain == "" {
+		return
+	}
+
+	s.updateContainer(container, &Endpoint{
+		Domain: container.Meta.Static.Domain,
+		Path:   container.Meta.Static.Path,
+		Rules:  []Rule{},
+	})
 }
 
 func (s *Server) updateContainer(container *Container, endpoint *Endpoint) {

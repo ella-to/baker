@@ -14,7 +14,7 @@ import (
 	"ella.to/baker/driver"
 	"ella.to/baker/internal/acme"
 	"ella.to/baker/internal/httpclient"
-	"ella.to/baker/internal/metrics"
+	bakerotel "ella.to/baker/internal/otel"
 	"ella.to/baker/rule"
 )
 
@@ -38,32 +38,29 @@ Git Hash: %s
 https://ella.to/baker
 `, Version, GitCommit)
 
+	ctx := context.Background()
+
 	acmePath := os.Getenv("BAKER_ACME_PATH")
 	acmeEnable := strings.ToLower(os.Getenv("BAKER_ACME")) == "yes"
 	logLevel := strings.ToLower(os.Getenv("BAKER_LOG_LEVEL"))
 	bufferSize := parseInt(os.Getenv("BAKER_BUFFER_SIZE"), 100)
 	pingDuration := parseDuration(os.Getenv("BAKER_PING_DURATION"), 2*time.Second)
-	metricsAddr := os.Getenv("BAKER_METRICS_ADDR")
-	if metricsAddr == "" {
-		metricsAddr = "0.0.0.0:8089"
-	}
 
 	slog.SetLogLoggerLevel(parseLogLevel(logLevel))
 
-	metricsHandler := metrics.SetupHandler()
-	metrics.SetInfo(Version, GitCommit)
+	defer bakerotel.Init(ctx, Version+"-"+GitCommit)()
 
 	dockerGetter, err := httpclient.NewClient(
 		httpclient.WithUnixSock("/var/run/docker.sock", "http://localhost"),
 	)
 	if err != nil {
-		slog.Error("failed to create http client", "error", err)
+		slog.ErrorContext(ctx, "failed to create http client", "error", err)
 		os.Exit(1)
 	}
 
 	docker := driver.NewDocker(dockerGetter)
 
-	handler := baker.NewServer(
+	srv := baker.NewServer(
 		baker.WithBufferSize(bufferSize),
 		baker.WithPingDuration(pingDuration),
 		baker.WithRules(
@@ -72,50 +69,33 @@ https://ella.to/baker
 			rule.RegisterRateLimiter(),
 		),
 	)
-	handler.RegisterDriver(docker.RegisterDriver)
+	srv.RegisterDriver(docker.RegisterDriver)
 
-	metricsServer := http.Server{
-		Addr:    metricsAddr,
-		Handler: metricsHandler,
-	}
-
-	defer func() {
-		shutdownErr := metricsServer.Shutdown(context.Background())
-		if shutdownErr != nil {
-			slog.Error("failed to shutdown metrics server", "error", shutdownErr)
-		}
-	}()
-
-	go func() {
-		slog.Info("starting metrics server", "addr", metricsAddr)
-		err := metricsServer.ListenAndServe()
-		if err != nil {
-			slog.Error("failed to start metrics server", "error", err)
-		}
-	}()
+	handler := bakerotel.NewHandler(srv)
 
 	if acmeEnable {
-		slog.Info(
+		slog.InfoContext(
+			ctx,
 			"starting tls server",
 			"acme_cache_path", acmePath,
 			"localhost_ca_cert_path", acme.LocalhostCAPath(acmePath),
 		)
 		err := acme.Start(handler, acmePath, func(ctx context.Context, host string) error {
-			if handler.HasDomain(ctx, host) {
+			if srv.HasDomain(ctx, host) {
 				return nil
 			}
-			slog.Warn("acme: rejecting certificate request for unregistered domain", "host", host)
+			slog.WarnContext(ctx, "acme: rejecting certificate request for unregistered domain", "host", host)
 			return acme.ErrHostNotAllowed
 		})
 		if err != nil {
-			slog.Error("failed to start acme", "error", err)
+			slog.ErrorContext(ctx, "failed to start acme", "error", err)
 			os.Exit(1)
 		}
 	} else {
-		slog.Info("starting server", "addr", ":80")
+		slog.InfoContext(ctx, "starting server", "addr", ":80")
 		err := http.ListenAndServe(":80", handler)
 		if err != nil {
-			slog.Error("failed to start server", "error", err)
+			slog.ErrorContext(ctx, "failed to start server", "error", err)
 		}
 	}
 }

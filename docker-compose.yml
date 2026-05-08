@@ -13,6 +13,21 @@ services:
       - BAKER_PING_DURATION=2s
       - BAKER_METRICS_ADDR=:8089
 
+      # OpenTelemetry – service.name and service.version are set by baker
+      # at build time; setting them here has no effect.
+      - OTEL_DEPLOYMENT_ENVIRONMENT=dev
+      - OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
+      #- OTEL_EXPORTER_OTLP_HEADERS=key=value,key=value
+      - OTEL_TRACES_SAMPLER=parentbased_traceidratio
+      - OTEL_TRACES_SAMPLER_ARG=1.0
+      - OTEL_METRIC_EXPORT_INTERVAL=15s
+      #- OTEL_RESOURCE_ATTRIBUTES=region=fra1,role=edge
+      - ELLA_OTEL_DISABLED=false
+      - ELLA_OTEL_LOGS_ENABLED=true
+      - ELLA_OTEL_LOGS_STDOUT=true
+      - ELLA_OTEL_LOGS_LEVEL=info
+
     ports:
       - "80:80"
       - "443:443"

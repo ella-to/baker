@@ -54,6 +54,17 @@ services:
       - BAKER_BUFFER_SIZE=100      # Event buffer size
       - BAKER_PING_DURATION=2s     # Health check interval
       - BAKER_METRICS_ADDR=:8089   # Metrics endpoint address
+      # OpenTelemetry (service.name/version are set by baker at build time)
+      - OTEL_DEPLOYMENT_ENVIRONMENT=dev
+      - OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+      - OTEL_EXPORTER_OTLP_INSECURE=true
+      - OTEL_TRACES_SAMPLER=parentbased_traceidratio
+      - OTEL_TRACES_SAMPLER_ARG=1.0
+      - OTEL_METRIC_EXPORT_INTERVAL=15s
+      - ELLA_OTEL_DISABLED=false
+      - ELLA_OTEL_LOGS_ENABLED=true
+      - ELLA_OTEL_LOGS_STDOUT=true
+      - ELLA_OTEL_LOGS_LEVEL=info
     ports:
       - "80:80"
       - "443:443"
@@ -109,6 +120,27 @@ networks:
 | `BAKER_BUFFER_SIZE` | `100` | Docker event buffer size |
 | `BAKER_PING_DURATION` | `2s` | Service health check interval |
 | `BAKER_METRICS_ADDR` | `:8089` | Prometheus metrics endpoint |
+
+### OpenTelemetry Environment Variables
+
+Baker initialises the `ella.to/otel` SDK at startup and **always overrides
+`service.name` (`baker`) and `service.version` (injected at build time)**,
+so setting `OTEL_SERVICE_NAME` or `OTEL_SERVICE_VERSION` has no effect.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_DEPLOYMENT_ENVIRONMENT` | `dev` | Sets `deployment.environment` resource attribute |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint (`host:port` or `http(s)://…`) |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `true` | Disable TLS for plain `:4317` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | *(none)* | Extra headers sent to the collector (`key=value,key=value`) |
+| `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | Head sampler (`always_on`, `always_off`, `parentbased_traceidratio`, …) |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Sampling ratio when sampler is `*_traceidratio` |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `15s` | Metric export interval (duration string) |
+| `OTEL_RESOURCE_ATTRIBUTES` | *(none)* | Extra resource attributes (`region=fra1,role=edge`) |
+| `ELLA_OTEL_DISABLED` | `false` | Install no-op providers (disables all telemetry) |
+| `ELLA_OTEL_LOGS_ENABLED` | `true` | Export logs via OTLP |
+| `ELLA_OTEL_LOGS_STDOUT` | `true` | Also write JSON logs to stdout |
+| `ELLA_OTEL_LOGS_LEVEL` | `info` | Minimum log level (`debug`/`info`/`warn`/`error`) |
 
 ### Service Labels
 

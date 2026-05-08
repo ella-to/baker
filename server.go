@@ -21,7 +21,6 @@ import (
 
 	"ella.to/baker/internal/collection"
 	"ella.to/baker/internal/httpclient"
-	"ella.to/baker/internal/metrics"
 	"ella.to/baker/internal/trie"
 	"ella.to/baker/rule"
 )
@@ -212,11 +211,8 @@ func copyWebsocketStream(ctx context.Context, dst, src *websocket.Conn) error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	domain := r.Host
 	path := r.URL.Path
-	method := r.Method
 
 	tw := &trackResponseWriter{w: w}
-
-	start := time.Now()
 
 	var container *Container
 	endpoint := &Endpoint{
@@ -232,15 +228,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isWebSocketRequest(r) {
-		defer func() {
-			metrics.WebsocketRequest(domain, path, method, tw.statusCode)
-		}()
 		s.handleWebSocket(tw, r, container)
 	} else {
-		defer func() {
-			metrics.HttpRequestCount(domain, path, method, tw.statusCode)
-			metrics.HttpRequestDuration(domain, path, method, tw.statusCode, float64(time.Since(start)))
-		}()
 		s.handleHTTP(tw, r, container, endpoint)
 	}
 }

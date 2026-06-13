@@ -1,6 +1,7 @@
 package baker_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,26 @@ import (
 	"ella.to/baker/rule"
 )
 
-// BenchmarkServerServeHTTP benchmarks the main ServeHTTP handler
+// waitForDomain blocks until the domain is registered with the server or the
+// deadline elapses, so benchmarks measure the proxy path rather than 404s.
+func waitForDomain(tb testing.TB, handler *baker.Server, domain string) {
+	tb.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		ok := handler.HasDomain(ctx, domain)
+		cancel()
+		if ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tb.Fatalf("domain %q was never registered", domain)
+}
+
+// BenchmarkServerServeHTTP benchmarks the main ServeHTTP handler against a real
+// backend. The container uses a static domain so the route registers immediately
+// without relying on the ping loop.
 func BenchmarkServerServeHTTP(b *testing.B) {
 	container := createBenchContainer(b, "bench.example.com", "/*")
 	handler := baker.NewServer(
@@ -32,8 +52,7 @@ func BenchmarkServerServeHTTP(b *testing.B) {
 	})
 	driver.Add(container)
 
-	// Wait for container to be registered
-	time.Sleep(3 * time.Second)
+	waitForDomain(b, handler, "bench.example.com")
 
 	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
 	req.Host = "bench.example.com"
@@ -55,7 +74,9 @@ func BenchmarkServerServeHTTP(b *testing.B) {
 func BenchmarkServerWithRateLimiter(b *testing.B) {
 	container := createBenchContainerWithRateLimiter(b)
 	handler := baker.NewServer(
-		baker.WithPingDuration(1*time.Hour),
+		// Rate-limit rules arrive via the dynamic config endpoint, so the
+		// ping loop must run to register them.
+		baker.WithPingDuration(50*time.Millisecond),
 		baker.WithRules(
 			rule.RegisterRateLimiter(),
 		),
@@ -67,7 +88,7 @@ func BenchmarkServerWithRateLimiter(b *testing.B) {
 	})
 	driver.Add(container)
 
-	time.Sleep(3 * time.Second)
+	waitForDomain(b, handler, "ratelimit.example.com")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -99,13 +120,13 @@ func BenchmarkServerMultipleContainers(b *testing.B) {
 	})
 
 	// Add multiple containers
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		domain := fmt.Sprintf("multi%d.example.com", i)
 		container := createBenchContainer(b, domain, "/*")
 		driver.Add(container)
 	}
 
-	time.Sleep(3 * time.Second)
+	waitForDomain(b, handler, "multi5.example.com")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -170,11 +191,16 @@ func createBenchContainer(tb testing.TB, domain, path string) *baker.Container {
 	benchMu.Unlock()
 
 	addr, _ := netip.ParseAddrPort(strings.TrimPrefix(server.URL, "http://"))
-	return &baker.Container{
+	c := &baker.Container{
 		Id:         fmt.Sprintf("bench-container-%d", id),
 		ConfigPath: "/config",
 		Addr:       addr,
 	}
+	// Use a static domain so the route registers immediately on Add, without
+	// depending on the ping loop. This keeps the proxy benchmark free of ping noise.
+	c.Meta.Static.Domain = domain
+	c.Meta.Static.Path = path
+	return c
 }
 
 func createBenchContainerWithRateLimiter(tb testing.TB) *baker.Container {

@@ -93,7 +93,19 @@ https://ella.to/baker
 		}
 	} else {
 		slog.InfoContext(ctx, "starting server", "addr", ":80")
-		err := http.ListenAndServe(":80", handler)
+		server := &http.Server{
+			Addr:    ":80",
+			Handler: handler,
+			// ReadHeaderTimeout bounds how long a client may take to send
+			// request headers, which is the primary Slowloris defense. We
+			// deliberately leave ReadTimeout/WriteTimeout unset: as a reverse
+			// proxy, baker must support large uploads, large/slow downloads and
+			// long-lived streaming (SSE, chunked) responses, which a blanket
+			// write deadline would sever.
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		err := server.ListenAndServe()
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to start server", "error", err)
 		}

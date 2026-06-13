@@ -41,10 +41,14 @@ func Start(handler http.Handler, cachePath string, hostPolicy HostPolicy) error 
 	}
 
 	httpsServer := &http.Server{
-		Addr:         ":443",
-		Handler:      handler,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		Addr:    ":443",
+		Handler: handler,
+		// ReadHeaderTimeout guards against Slowloris while keeping baker able to
+		// proxy large uploads, large/slow downloads and long-lived streaming
+		// responses. A blanket ReadTimeout/WriteTimeout (previously 5s) would
+		// sever any transfer that legitimately runs longer.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 		TLSConfig: &tls.Config{
 			GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				host := normalizeHost(chi.ServerName)

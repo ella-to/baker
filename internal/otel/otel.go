@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"ella.to/baker"
 	otelella "ella.to/otel"
 	otelconfig "ella.to/otel/config"
 	otelhttp "ella.to/otel/http"
@@ -164,16 +165,26 @@ func newMetricsMiddleware(next http.Handler) *metricsMiddleware {
 func (m *metricsMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	m.next.ServeHTTP(rec, r)
+
+	// Carry a RouteInfo so baker can report which registered route handled the
+	// request. Using the matched route pattern (not the raw URL path) as the
+	// metric attribute keeps time-series cardinality bounded by the number of
+	// registered routes instead of growing without bound across distinct URLs.
+	ctx, routeInfo := baker.WithRouteInfo(r.Context())
+	m.next.ServeHTTP(rec, r.WithContext(ctx))
+
+	route := routeInfo.Pattern
+	if route == "" {
+		route = "unmatched"
+	}
 
 	attrs := metric.WithAttributes(
 		attribute.String("http.host", r.Host),
 		attribute.String("http.method", r.Method),
-		attribute.String("http.route", r.URL.Path),
+		attribute.String("http.route", route),
 		attribute.String("http.status_code", strconv.Itoa(rec.status)),
 	)
 
-	ctx := r.Context()
 	m.requests.Add(ctx, 1, attrs)
 	if rec.status >= 500 {
 		m.errors.Add(ctx, 1, attrs)

@@ -2,31 +2,19 @@ package baker
 
 import (
 	"context"
-	"log/slog"
+	"sync"
 )
 
-type EventType int
-
-const (
-	_ EventType = iota
-	pingerEvent
-	addEvent
-	updateEvent
-	removeEvent
-	getEvent
-	hasDomainEvent
-)
-
-type Event struct {
-	Type      EventType
-	Container *Container
-	Endpoint  *Endpoint
-	Result    chan struct {
-		Container *Container
-		Endpoint  *Endpoint
-	}
-}
-
+// ActionRunner adapts the driver-facing mutation API (Add/Remove/Update) and the
+// read API (Get/HasDomain) onto callbacks supplied by the server.
+//
+// It used to serialize every operation through a single goroutine and channel,
+// which made the request read path a throughput bottleneck and silently dropped
+// events when the channel filled. Synchronization is now provided by the
+// server's RWMutex inside the callbacks, so these methods invoke the callbacks
+// directly: mutations block briefly on the write lock (and are therefore visible
+// the instant the call returns), while reads run concurrently under the read
+// lock.
 type ActionRunner struct {
 	pingerCallback    func()
 	addCallback       func(*Container)
@@ -35,84 +23,40 @@ type ActionRunner struct {
 	getCallback       func(string, string) (*Container, *Endpoint)
 	hasDomainCallback func(string) bool
 
-	events chan *Event
-	close  chan struct{} // using this to make sure pushing to events stops when Close() is called
+	closeOnce sync.Once
+	close     chan struct{}
 }
 
 var _ Driver = (*ActionRunner)(nil)
 
 func (ar *ActionRunner) Pinger() {
-	ar.push(&Event{Type: pingerEvent})
+	ar.pingerCallback()
 }
 
 func (ar *ActionRunner) Add(container *Container) {
-	ar.push(&Event{Type: addEvent, Container: container})
+	ar.addCallback(container)
 }
 
 func (ar *ActionRunner) Update(container *Container, endpoint *Endpoint) {
-	ar.push(&Event{Type: updateEvent, Container: container, Endpoint: endpoint})
+	ar.updateCallback(container, endpoint)
 }
 
 func (ar *ActionRunner) Remove(container *Container) {
-	ar.push(&Event{Type: removeEvent, Container: container})
+	ar.removeCallback(container)
 }
 
 func (ar *ActionRunner) Get(ctx context.Context, endpoint *Endpoint) (*Container, *Endpoint) {
-	evt := &Event{
-		Type:     getEvent,
-		Endpoint: endpoint,
-		Result: make(chan struct {
-			Container *Container
-			Endpoint  *Endpoint
-		}, 1),
-	}
-
-	ar.push(evt)
-
-	select {
-	case r := <-evt.Result:
-		return r.Container, r.Endpoint
-	case <-ctx.Done():
-		return nil, nil
-	case <-ar.close:
-		return nil, nil
-	}
+	return ar.getCallback(endpoint.Domain, endpoint.Path)
 }
 
 func (ar *ActionRunner) HasDomain(ctx context.Context, domain string) bool {
-	evt := &Event{
-		Type:     hasDomainEvent,
-		Endpoint: &Endpoint{Domain: domain},
-		Result: make(chan struct {
-			Container *Container
-			Endpoint  *Endpoint
-		}, 1),
-	}
-
-	ar.push(evt)
-
-	select {
-	case r := <-evt.Result:
-		return r.Container != nil
-	case <-ctx.Done():
-		return false
-	case <-ar.close:
-		return false
-	}
-}
-
-func (ar *ActionRunner) push(event *Event) {
-	select {
-	case <-ar.close:
-		return
-	case ar.events <- event:
-	default:
-		slog.Error("ActionRunner: events channel is full, dropping event")
-	}
+	return ar.hasDomainCallback(domain)
 }
 
 func (ar *ActionRunner) Close() {
-	close(ar.close)
+	ar.closeOnce.Do(func() {
+		close(ar.close)
+	})
 }
 
 func WithPingerCallback(callback func()) func(*ActionRunner) {
@@ -153,58 +97,17 @@ func WithHasDomainCallback(callback func(string) bool) func(*ActionRunner) {
 
 type ActionCallback func(*ActionRunner)
 
+// NewActionRunner builds an ActionRunner from the supplied callbacks. bufferSize
+// is retained for backwards compatibility but is no longer used (operations are
+// no longer queued through a channel).
 func NewActionRunner(bufferSize int, cbs ...ActionCallback) *ActionRunner {
 	ar := &ActionRunner{
-		events: make(chan *Event, bufferSize),
-		close:  make(chan struct{}),
+		close: make(chan struct{}),
 	}
 
 	for _, cb := range cbs {
 		cb(ar)
 	}
-
-	go func() {
-		defer slog.Debug("ActionRunner: stopped")
-
-		for {
-			select {
-			case <-ar.close:
-				return
-			case event, ok := <-ar.events:
-				if !ok {
-					return
-				}
-
-				switch event.Type {
-				case pingerEvent:
-					ar.pingerCallback()
-				case addEvent:
-					ar.addCallback(event.Container)
-				case updateEvent:
-					ar.updateCallback(event.Container, event.Endpoint)
-				case removeEvent:
-					ar.removeCallback(event.Container)
-				case getEvent:
-					container, endpoint := ar.getCallback(event.Endpoint.Domain, event.Endpoint.Path)
-					event.Result <- struct {
-						Container *Container
-						Endpoint  *Endpoint
-					}{container, endpoint}
-				case hasDomainEvent:
-					var result *Container
-					if ar.hasDomainCallback(event.Endpoint.Domain) {
-						result = &Container{} // non-nil to indicate true
-					}
-					event.Result <- struct {
-						Container *Container
-						Endpoint  *Endpoint
-					}{result, nil}
-				default:
-					continue
-				}
-			}
-		}
-	}()
 
 	return ar
 }

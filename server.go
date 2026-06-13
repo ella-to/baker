@@ -8,13 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -25,6 +26,13 @@ import (
 	"ella.to/baker/rule"
 )
 
+// maxPingFailures is the number of consecutive failed pings after which an
+// unresponsive container is removed from the routing table.
+const maxPingFailures = 3
+
+// pingTimeout bounds each per-container config fetch during a ping cycle.
+const pingTimeout = 2 * time.Second
+
 type containerInfo struct {
 	container *Container
 	domain    string
@@ -33,12 +41,20 @@ type containerInfo struct {
 }
 
 type Server struct {
-	bufferSize         int
-	pingDuration       time.Duration
-	containersMap      map[string]*containerInfo       // containerID -> containerInfo
-	domainsMap         map[string]*trie.Node[*Service] // domain -> path -> containers
+	bufferSize   int
+	pingDuration time.Duration
+
+	// mu guards containersMap and domainsMap. The request hot path takes the
+	// read lock so lookups run concurrently across cores; the infrequent
+	// mutations (driver add/remove, ping-driven updates) take the write lock.
+	mu            sync.RWMutex
+	containersMap map[string]*containerInfo       // containerID -> containerInfo
+	domainsMap    map[string]*trie.Node[*Service] // domain -> path -> containers
+
 	rules              map[string]rule.BuilderFunc
 	middlewareCacheMap *collection.Map[rule.Middleware]
+	proxy              *httputil.ReverseProxy
+	pingClient         httpclient.Getter
 	runner             *ActionRunner
 	close              chan struct{}
 	isDebug            bool
@@ -77,34 +93,27 @@ func (t *trackResponseWriter) WriteHeader(code int) {
 	t.w.WriteHeader(code)
 }
 
+// Flush forwards to the underlying writer when it supports flushing so that
+// streaming responses (SSE, chunked transfer) reach the client promptly.
+// httputil.ReverseProxy type-asserts the response writer for http.Flusher; if
+// this wrapper did not implement it, streaming responses would buffer.
+func (t *trackResponseWriter) Flush() {
+	if f, ok := t.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the underlying writer so http.ResponseController can reach
+// capabilities not promoted through this wrapper.
+func (t *trackResponseWriter) Unwrap() http.ResponseWriter {
+	return t.w
+}
+
 func isWebSocketRequest(r *http.Request) bool {
 	return strings.ToLower(r.Header.Get("Connection")) == "upgrade" && strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
 }
 
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, container *Container, endpoint *Endpoint) {
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			url := &url.URL{
-				Scheme: "http",
-				Host:   container.Addr.String(),
-			}
-
-			slog.Debug("rewriting url", "from", r.In.URL.String(), "to", url.String())
-
-			r.SetURL(url)     // Forward request to outboundURL.
-			r.SetXForwarded() // Set X-Forwarded-* headers.
-
-			for k, v := range container.Meta.Static.Headers {
-				key := strings.ToUpper(k)
-				if key == "HOST" {
-					r.Out.Host = v
-					continue
-				}
-				r.Out.Header.Set(key, v)
-			}
-		},
-	}
-
 	middlewares, err := s.getMiddlewares(endpoint)
 	if err != nil {
 		slog.Error("failed to get middlewares", "error", err)
@@ -112,7 +121,13 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request, container *C
 		return
 	}
 
-	rule.Chain(proxy, middlewares...).ServeHTTP(w, r)
+	target := &proxyTarget{
+		host:    container.Addr.String(),
+		headers: container.Meta.Static.Headers,
+	}
+	r = r.WithContext(withProxyTarget(r.Context(), target))
+
+	rule.Chain(s.proxy, middlewares...).ServeHTTP(w, r)
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, container *Container) {
@@ -154,25 +169,18 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, contain
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// Proxy data between client and server
+	// Proxy data in both directions. Each direction uses its own error variable
+	// to avoid a data race on a shared one, and cancels the shared context when
+	// it finishes so the other direction unblocks and the connections close.
 	go func() {
 		defer cancel()
-
-		for {
-			err = copyWebsocketStream(ctx, clientConn, serverConn)
-			if err != nil {
-				slog.Error("failed to copy data between server and client", "error", err)
-				return
-			}
+		if err := copyWebsocketStream(ctx, clientConn, serverConn); err != nil {
+			slog.Error("failed to copy data between server and client", "error", err)
 		}
 	}()
 
-	for {
-		err = copyWebsocketStream(ctx, serverConn, clientConn)
-		if err != nil {
-			slog.Error("failed to copy data between client and server", "error", err)
-			return
-		}
+	if err := copyWebsocketStream(ctx, serverConn, clientConn); err != nil {
+		slog.Error("failed to copy data between client and server", "error", err)
 	}
 }
 
@@ -195,6 +203,15 @@ func copyWebsocketStream(ctx context.Context, dst, src *websocket.Conn) error {
 
 		_, err = io.Copy(w, r)
 		if err != nil {
+			_ = w.Close()
+			break
+		}
+
+		// The writer must be closed to flush the WebSocket frame (set the FIN
+		// bit) to the other peer. Without this, messages are buffered and never
+		// delivered.
+		err = w.Close()
+		if err != nil {
 			break
 		}
 	}
@@ -214,17 +231,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	tw := &trackResponseWriter{w: w}
 
-	var container *Container
-	endpoint := &Endpoint{
-		Domain: domain,
-		Path:   path,
-	}
-
-	container, endpoint = s.runner.Get(r.Context(), endpoint)
+	// Resolve the route directly under the read lock. This is the hot path: it
+	// runs concurrently across cores instead of serializing through the action
+	// runner goroutine.
+	container, endpoint := s.getContainer(domain, path)
 	if container == nil {
 		tw.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(tw, "not found, domain: %s, path: %s", domain, path)
 		return
+	}
+
+	// Surface the matched route pattern for any outer observability middleware
+	// so metric cardinality stays bounded by registered routes, not raw URLs.
+	if ri := routeInfoFromContext(r.Context()); ri != nil {
+		ri.Pattern = endpoint.Domain + endpoint.Path
 	}
 
 	if isWebSocketRequest(r) {
@@ -278,65 +298,63 @@ func (s *Server) getMiddlewares(endpoint *Endpoint) ([]rule.Middleware, error) {
 }
 
 func (s *Server) pingContainers() {
-	// make a copy of the containers map
-	containers := make([]*containerInfo, 0, len(s.containersMap))
+	// Snapshot the containers under the read lock, then release it before doing
+	// any network I/O or taking the write lock (which the static re-register and
+	// per-container updates below do).
+	s.mu.RLock()
+	dynamic := make([]*Container, 0, len(s.containersMap))
+	static := make([]*Container, 0)
 	for _, cInfo := range s.containersMap {
-		// if container has a static domain configuration, we dont need to ping it
+		// if a container has a static domain configuration, we don't need to ping it
 		if cInfo.container.Meta.Static.Domain == "" {
-			containers = append(containers, cInfo)
+			dynamic = append(dynamic, cInfo.container)
 		} else {
-			s.registerStaticContainer(cInfo.container)
+			static = append(static, cInfo.container)
 		}
 	}
+	s.mu.RUnlock()
 
-	getter, err := httpclient.NewClient(httpclient.WithHttpClientTimeout(2*time.Second, ""))
-	if err != nil {
-		slog.Error("failed to create http client", "error", err)
-		return
+	// Re-assert static routes (idempotent; updateContainerLocked no-ops when the
+	// domain/path are unchanged).
+	for _, c := range static {
+		s.registerStaticContainer(c)
 	}
 
-	// ping all the containers
-	for _, ci := range containers {
-		// Copy the base info to prevent data race
-		pingCount := ci.pingCount + 1
-		url := fmt.Sprintf("http://%s%s", ci.container.Addr, ci.container.ConfigPath)
-		c := &Container{
-			Id:         ci.container.Id,
-			ConfigPath: ci.container.ConfigPath,
-			Addr:       ci.container.Addr,
-		}
+	// ping all the dynamic containers concurrently
+	for _, c := range dynamic {
+		url := fmt.Sprintf("http://%s%s", c.Addr, c.ConfigPath)
 
-		go func(c *Container, url string, pingCount int64) {
-			if pingCount > 3 {
-				slog.Error("container is not responding", "container_id", c.Id, "ping_count", pingCount)
-				s.runner.Remove(c)
-				return
-			}
+		go func(c *Container, url string) {
+			ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+			defer cancel()
 
-			ctx := context.Background()
-
-			rc, statusCode, err := getter.Get(ctx, url)
+			rc, statusCode, err := s.pingClient.Get(ctx, url)
 			if err != nil {
 				slog.Error("failed to call container config endpoint", "container_id", c.Id, "url", url, "error", err)
+				s.recordPingFailure(c)
 				return
 			}
 			defer rc.Close()
 
+			if statusCode >= 400 {
+				slog.Error("container config endpoint returned an error", "container_id", c.Id, "url", url, "status_code", statusCode)
+				s.recordPingFailure(c)
+				return
+			}
+
 			config, err := s.parseConfig(rc)
 			if err != nil {
 				slog.Error("failed to read container config", "container_id", c.Id, "url", url, "error", err)
+				s.recordPingFailure(c)
 				return
 			}
 
-			if statusCode >= 400 {
-				slog.Error("container config endpoint returned an error", "container_id", c.Id, "url", url, "status_code", statusCode)
-				return
-			}
+			s.recordPingSuccess(c.Id)
 
-			for _, endpoint := range config.Endpoints {
-				s.runner.Update(c, &endpoint)
+			for i := range config.Endpoints {
+				s.updateContainer(c, &config.Endpoints[i])
 			}
-		}(c, url, pingCount)
+		}(c, url)
 	}
 }
 
@@ -364,6 +382,12 @@ func (s *Server) parseConfig(rc io.ReadCloser) (*Config, error) {
 }
 
 func (s *Server) addContainer(container *Container) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.addContainerLocked(container)
+}
+
+func (s *Server) addContainerLocked(container *Container) {
 	_, ok := s.containersMap[container.Id]
 	if ok {
 		// usually this should not happen, but if it does, we can just
@@ -378,15 +402,21 @@ func (s *Server) addContainer(container *Container) {
 		path:      "",
 	}
 
-	s.registerStaticContainer(container)
+	s.registerStaticContainerLocked(container)
 }
 
 func (s *Server) registerStaticContainer(container *Container) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registerStaticContainerLocked(container)
+}
+
+func (s *Server) registerStaticContainerLocked(container *Container) {
 	if container.Meta.Static.Domain == "" {
 		return
 	}
 
-	s.updateContainer(container, &Endpoint{
+	s.updateContainerLocked(container, &Endpoint{
 		Domain: container.Meta.Static.Domain,
 		Path:   container.Meta.Static.Path,
 		Rules:  []Rule{},
@@ -394,6 +424,12 @@ func (s *Server) registerStaticContainer(container *Container) {
 }
 
 func (s *Server) updateContainer(container *Container, endpoint *Endpoint) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateContainerLocked(container, endpoint)
+}
+
+func (s *Server) updateContainerLocked(container *Container, endpoint *Endpoint) {
 	cInfo, ok := s.containersMap[container.Id]
 	if ok && cInfo.domain == endpoint.Domain && cInfo.path == endpoint.Path {
 		// if the container is already in the correct domain and path, we don't need to do anything
@@ -433,6 +469,41 @@ func (s *Server) updateContainer(container *Container, endpoint *Endpoint) {
 }
 
 func (s *Server) removeContainer(container *Container) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeContainerLocked(container)
+}
+
+// recordPingFailure increments the consecutive failure count for a container
+// and removes it once it crosses maxPingFailures, so dead backends stop
+// receiving traffic even when no driver "remove" event arrives.
+func (s *Server) recordPingFailure(container *Container) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cInfo, ok := s.containersMap[container.Id]
+	if !ok {
+		return
+	}
+
+	cInfo.pingCount++
+	if cInfo.pingCount > maxPingFailures {
+		slog.Error("container is not responding, removing", "container_id", container.Id, "failures", cInfo.pingCount)
+		s.removeContainerLocked(container)
+	}
+}
+
+// recordPingSuccess resets the failure count after a healthy ping.
+func (s *Server) recordPingSuccess(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cInfo, ok := s.containersMap[id]; ok {
+		cInfo.pingCount = 0
+	}
+}
+
+func (s *Server) removeContainerLocked(container *Container) {
 	containerInfo, ok := s.containersMap[container.Id]
 	if !ok {
 		return
@@ -461,6 +532,12 @@ func (s *Server) removeContainer(container *Container) {
 		if len(service.Containers) == 0 {
 			paths.Del([]rune(containerInfo.path))
 			s.middlewareCacheMap.Delete(service.Endpoint.getHashKey())
+			// Drop the domain entirely once it has no remaining routes, so
+			// HasDomain (used by ACME) does not report stale domains and the
+			// map does not retain empty tries.
+			if paths.Size() == 0 {
+				delete(s.domainsMap, containerInfo.domain)
+			}
 		} else {
 			paths.Put([]rune(containerInfo.path), service)
 		}
@@ -477,19 +554,22 @@ func (s *Server) getContainer(domain, path string) (container *Container, endpoi
 		}
 	}()
 
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	paths, ok := s.domainsMap[domain]
 	if !ok {
 		return nil, nil
 	}
 
-	service := paths.Get([]rune(path))
+	service := paths.GetString(path)
 	if service == nil || len(service.Containers) == 0 {
 		return nil, nil
 	}
 
 	// randomly select a container from the list
 	// this is not the best way to do this, but it's good enough for now
-	pos := rand.Int31n(int32(len(service.Containers)))
+	pos := rand.IntN(len(service.Containers))
 
 	return service.Containers[pos], service.Endpoint
 }
@@ -497,10 +577,13 @@ func (s *Server) getContainer(domain, path string) (container *Container, endpoi
 // HasDomain checks if a domain is registered with the server.
 // This can be used by ACME to validate domains before requesting certificates.
 func (s *Server) HasDomain(ctx context.Context, domain string) bool {
-	return s.runner.HasDomain(ctx, domain)
+	return s.hasDomain(domain)
 }
 
 func (s *Server) hasDomain(domain string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	_, ok := s.domainsMap[domain]
 	return ok
 }
@@ -552,9 +635,19 @@ func NewServer(opts ...serverOpt) *Server {
 		containersMap:      make(map[string]*containerInfo),
 		domainsMap:         make(map[string]*trie.Node[*Service]),
 		middlewareCacheMap: collection.NewMap[rule.Middleware](),
+		proxy:              newReverseProxy(),
 		close:              make(chan struct{}),
 		isDebug:            logLevel == "debug",
 	}
+
+	// A single reused client for health pings; its idle connections are pooled
+	// across ping cycles instead of being rebuilt each time.
+	pingClient, err := httpclient.NewClient(httpclient.WithHttpClientTimeout(pingTimeout, ""))
+	if err != nil {
+		slog.Error("failed to create ping http client", "error", err)
+		return nil
+	}
+	s.pingClient = pingClient
 
 	for _, opt := range opts {
 		if err := opt.configureServer(s); err != nil {

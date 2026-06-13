@@ -51,10 +51,48 @@ func (n *Node[T]) Get(key []rune) T {
 	return current.val
 }
 
+// GetString behaves like Get but takes a string key and ranges over its runes
+// directly, avoiding the []rune allocation on the hot lookup path.
+func (n *Node[T]) GetString(key string) T {
+	var wild *Node[T]
+	var defaultValue T
+
+	current := n
+	consumedAll := true
+
+	for _, r := range key {
+		if current.wild {
+			wild = current
+		}
+
+		next, ok := current.children[r]
+		if !ok {
+			consumedAll = false
+			break
+		}
+
+		current = next
+	}
+
+	if !consumedAll {
+		if wild != nil {
+			current = wild
+		} else {
+			return defaultValue
+		}
+	}
+
+	if !current.set {
+		return defaultValue
+	}
+
+	return current.val
+}
+
 func (n *Node[T]) Put(key []rune, val T) {
 	current := n
 
-	for i := 0; i < len(key); i++ {
+	for i := range len(key) {
 		r := key[i]
 
 		next, ok := current.children[r]
@@ -81,7 +119,7 @@ func (n *Node[T]) Del(key []rune) {
 	current := n
 
 	// first need to find the node
-	for i := 0; i < len(key); i++ {
+	for i := range len(key) {
 		r := key[i]
 
 		if r == wildChar {

@@ -79,6 +79,29 @@ func TestTrieWildcard(t *testing.T) {
 	})
 }
 
+func TestGetStringMatchesGet(t *testing.T) {
+	// GetString is the allocation-free hot-path equivalent of Get; it must
+	// return identical results for every key, including wildcard fallbacks,
+	// non-ASCII runes, and the empty key.
+	tr := trie.New[string]()
+	keys := []string{
+		"/", "/a", "/a/b", "/a/b/c", "/api/*", "/api/v1/*", "/exact", "/*",
+		"/ünïcode/*", "/ünïcode/path",
+	}
+	for _, k := range keys {
+		tr.Put([]rune(k), "v:"+k)
+	}
+
+	lookups := []string{
+		"/", "/a", "/a/b", "/a/b/c", "/a/b/c/d", "/api/anything",
+		"/api/v1/users", "/exact", "/other", "/nope", "",
+		"/ünïcode/path", "/ünïcode/else",
+	}
+	for _, k := range lookups {
+		assert.Equalf(t, tr.Get([]rune(k)), tr.GetString(k), "key %q", k)
+	}
+}
+
 func TestTrieDelete(t *testing.T) {
 	t.Run("delete leaf node", func(t *testing.T) {
 		tr := trie.New[int]()
